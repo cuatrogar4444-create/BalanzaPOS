@@ -12,6 +12,7 @@ using System.Linq; // Agregado para Cast, Select y Sum
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Windows.Threading;
 using static System.Runtime.CompilerServices.RuntimeHelpers;
 
 namespace BalanzaPOSNuevo
@@ -25,7 +26,6 @@ namespace BalanzaPOSNuevo
         #region Campos de Clase
         private Timer demoWeightTimer;
         private SerialPort serialPort;
-        private List<ProductQuickInfo> quickProducts = new List<ProductQuickInfo>();
         private DataTable productDataTable = new DataTable();
         private DataTable userDataTable = new DataTable();
         private DataTable saleItemsDataTable = new DataTable();
@@ -47,19 +47,22 @@ namespace BalanzaPOSNuevo
         private readonly long loggedInUserId; // Agregar variable
         private decimal? currentWeight;
         private long lastSaleId;
-        
+        private string bufferSerial = string.Empty; // Variable a nivel de clase para acumular datos
         #endregion
-        public class ProductQuickInfo
+
+        // Asegúrate de que esta clase esté definida en tu proyecto
+        public class Product
         {
             public int Id { get; set; }
-            public string Code { get; set; } // Añadir propiedad Code
+            public string Code { get; set; }
             public string Name { get; set; }
-            public decimal PricePerUnit { get; set; }
             public string Unit { get; set; }
+            public decimal PricePerUnit { get; set; }
             public decimal Stock { get; set; }
-            public decimal MinimumStock { get; set; }
+            public decimal MinimumStock { get; set; } // ¡CORRECCIÓN AQUÍ! Debe coincidir con la BD
+            public bool Active { get; set; } //
+                                             // Otras propiedades relevantes como Active, etc.
         }
-
         public MainScreen(long userId, bool isAdmin)
         {
             InitializeComponent();
@@ -71,13 +74,6 @@ namespace BalanzaPOSNuevo
             DatabaseHelper.InitializeDatabase();
             ConfiguracionUsuario.LoadSettings();
 
-            weightUpdateTimer = new System.Windows.Forms.Timer
-            {
-                Interval = 500,
-                Enabled = false
-            };
-            weightUpdateTimer.Tick += WeightUpdateTimer_Tick;
-
             saleItemsDataTable = new DataTable();
             InitializeSaleItemsDataTable();
             InitializeDataGridViews();
@@ -85,7 +81,7 @@ namespace BalanzaPOSNuevo
 
             btnConnectBalanza.Enabled = true;
             btnNewSale.Enabled = true;
-            btnFinalizeSale.Enabled = false;
+            btnFinalizeSale.Enabled = true;
             this.FormClosing += MainScreen_FormClosing;
             PopulateSerialPorts();
             SetupAdminButtons();
@@ -312,29 +308,93 @@ namespace BalanzaPOSNuevo
             MessageBox.Show(columnNames);
         }
         //// Hasta aquimetodo temporal
+        private void InitializeSerialPort()
+        {
+            _serialPort = new SerialPort();
+            // Asegúrate de que estos valores coincidan con tu balanza
+            _serialPort.PortName = "COM3"; // O el puerto seleccionado en tu configuración
+            _serialPort.BaudRate = 9600;
+            _serialPort.Parity = Parity.None;
+            _serialPort.DataBits = 8;
+            _serialPort.StopBits = StopBits.One;
+            _serialPort.ReadTimeout = 500; // Tiempo de espera para la lectura
 
+            _serialPort.DataReceived += SerialPort_DataReceived;
+        }
         private void SerialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
+        {
+            // Esto debe ejecutarse en el hilo de la UI para actualizar el control
+            this.Invoke(new MethodInvoker(delegate
+            {
+                bufferSerial += serialPort.ReadExisting(); // Acumula todos los datos recibidos
+
+                // Asumiendo que cada "lectura" de peso termina con un salto de línea o retorno de carro
+                if (bufferSerial.Contains("\r") || bufferSerial.Contains("\n"))
+                {
+                    string[] lines = bufferSerial.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (lines.Length > 0)
+                    {
+                        string lastLine = lines[lines.Length - 1].Trim(); // Toma la última línea completa
+                        if (decimal.TryParse(lastLine, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal weight))
+                        {
+                            txtWeightDisplay.Text = weight.ToString("F3", CultureInfo.InvariantCulture); // Formatea a 3 decimales
+                            Logger.Log("Peso Balanza", $"Peso: {weight:F3}");
+                        }
+                        else
+                        {
+                            Logger.Log("Advertencia", $"No se pudo parsear el peso: '{lastLine}'");
+                        }
+                    }
+                    bufferSerial = string.Empty; // Limpia el buffer después de procesar
+                }
+            }));
+        }
+
+        private void ProcessSerialData(SerialPort port)
         {
             try
             {
-                string data = serialPort.ReadExisting();
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Datos crudos recibidos: {data}\n");
-                if (decimal.TryParse(data, out decimal weight))
+                string data = port.ReadExisting();
+                Logger.Log("Datos Balanza", $"Recibido: {data.Trim()}");
+
+                // Regex más robusto para encontrar números decimales con posible signo
+                // Ajusta este Regex al formato EXACTO de tu balanza.
+                Match match = Regex.Match(data, @"[+-]?\s*(\d+(\.\d+)?)");
+
+                if (match.Success)
                 {
-                    currentWeight = weight;
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] Peso actualizado: {currentWeight}\n");
-                }
-                else
-                {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] Datos inválidos: {data}\n");
+                    decimal weight;
+                    // Usar CultureInfo.InvariantCulture para parsear el punto decimal
+                    if (decimal.TryParse(match.Groups[1].Value, NumberStyles.Any, CultureInfo.InvariantCulture, out weight))
+                    {
+                        // Usa el formato de decimales de la configuración del usuario
+                        string format = "F" + ConfiguracionUsuario.WeightDecimals.ToString();
+                        txtWeightDisplay.Text = weight.ToString(format, CultureInfo.InvariantCulture);
+                        txtWeightDisplay.Refresh(); // Fuerza la actualización del TextBox
+                        Logger.Log("Peso Balanza", $"Peso: {txtWeightDisplay.Text}");
+                    }
                 }
             }
+            catch (TimeoutException) { /* No hacer nada, es normal */ }
             catch (Exception ex)
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en SerialPort_DataReceived: {ex.Message}\n");
+                Logger.Log("Error Balanza", $"Error en DataReceived: {ex.Message}\nStackTrace: {ex.StackTrace}");
             }
         }
+        private bool TryParseWeight(string data, out decimal weight)
+        {
+            weight = 0;
+            // Expresión regular para encontrar números decimales (ajustar si tu balanza tiene otro formato)
+            System.Text.RegularExpressions.Match match =
+                System.Text.RegularExpressions.Regex.Match(data, @"\d+\.?\d*");
 
+            if (match.Success)
+            {
+                return decimal.TryParse(match.Value, System.Globalization.NumberStyles.Any,
+                                         System.Globalization.CultureInfo.InvariantCulture, out weight);
+            }
+            return false;
+        }
         private void ReconfigureSerialPort(string newPortName, int newBaudRate)
         {
             try
@@ -524,68 +584,72 @@ namespace BalanzaPOSNuevo
 
         private void AssignQuickProductsToButtons()
         {
+            // Primero, desuscribe todos los eventos y limpia los botones
+            for (int i = 1; i <= 10; i++) // Asume 10 botones rápidos fijos
+            {
+                Button btn = panel2.Controls.Find($"btnProductQuick{i}", true).FirstOrDefault() as Button;
+                if (btn != null)
+                {
+                    btn.Click -= btnProductQuick_Click; // Desuscribe el evento anterior
+                    btn.Text = "Vacío"; // Texto por defecto
+                    btn.Tag = null;     // Limpia el Tag (importante)
+                    btn.Enabled = false; // Deshabilita el botón si no hay producto
+                }
+            }
+
             try
             {
                 using (var conn = DatabaseHelper.GetConnection())
                 {
                     conn.Open();
-                    // Verificar si la columna QuickAccess existe
-                    using (var cmdCheck = new SQLiteCommand("PRAGMA table_info(Products)", conn))
-                    {
-                        using (var readerCheck = cmdCheck.ExecuteReader())
-                        {
-                            bool hasQuickAccess = false;
-                            while (readerCheck.Read())
-                            {
-                                string columnName = readerCheck.GetString(1);
-                                if (columnName.Equals("QuickAccess", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    hasQuickAccess = true;
-                                    break;
-                                }
-                            }
-                            if (!hasQuickAccess)
-                            {
-                                Logger.Log("Error al asignar productos rápidos", "La columna QuickAccess no existe en la tabla Products");
-                                MessageBox.Show("La columna QuickAccess no existe en la tabla Products. Por favor, actualice la base de datos.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                return;
-                            }
-                        }
-                    }
+                    // Consulta que une QuickProducts con Products para obtener toda la información del producto
+                    string query = @"
+                     SELECT qp.ButtonIndex, p.Id, p.Code, p.Name, p.Unit, p.PricePerUnit, p.Stock, p.MinimumStock, p.Active
+                     FROM QuickProducts qp
+                     JOIN Products p ON qp.ProductId = p.Id
+                     WHERE p.Active = 1
+                     ORDER BY qp.ButtonIndex";
 
-                    using (var cmd = new SQLiteCommand("SELECT Code, Name FROM Products WHERE QuickAccess = 1 AND Active = 1 ORDER BY Id LIMIT 10", conn))
+                    using (var cmd = new SQLiteCommand(query, conn))
                     {
                         using (var reader = cmd.ExecuteReader())
                         {
-                            int buttonIndex = 1;
-                            while (reader.Read() && buttonIndex <= 10)
+                            while (reader.Read())
                             {
-                                string code = reader.IsDBNull(0) ? "" : reader.GetString(0);
-                                string name = reader.IsDBNull(1) ? "Sin Nombre" : reader.GetString(1);
-                                Logger.Log("Producto rápido encontrado", $"Código: {code}, Nombre: {name}, Botón: btnProductQuick{buttonIndex}");
+                                int buttonIndex = reader.GetInt32(reader.GetOrdinal("ButtonIndex"));
+
+                                // Busca el botón en el panel2
                                 var button = panel2.Controls.Find($"btnProductQuick{buttonIndex}", true).FirstOrDefault() as Button;
                                 if (button != null)
                                 {
-                                    button.Text = name;
-                                    button.Tag = code;
-                                    button.Click -= btnQuickProduct_Click; // Evitar múltiples suscripciones
-                                    button.Click += btnQuickProduct_Click;
+                                    // Crea un objeto Product completo y lo almacena en el Tag
+                                    Product product = new Product
+                                    {
+                                        Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                                        Code = reader.IsDBNull(reader.GetOrdinal("Code")) ? string.Empty : reader.GetString(reader.GetOrdinal("Code")),
+                                        Name = reader.IsDBNull(reader.GetOrdinal("Name")) ? "N/A" : reader.GetString(reader.GetOrdinal("Name")),
+                                        Unit = reader.IsDBNull(reader.GetOrdinal("Unit")) ? "unidad" : reader.GetString(reader.GetOrdinal("Unit")),
+                                        PricePerUnit = reader.GetDecimal(reader.GetOrdinal("PricePerUnit")),
+                                        Stock = reader.GetDecimal(reader.GetOrdinal("Stock")),
+                                        MinimumStock = reader.IsDBNull(reader.GetOrdinal("MinimumStock")) ? 0 : reader.GetDecimal(reader.GetOrdinal("MinimumStock")), // ¡CORRECCIÓN AQUÍ!
+                                        Active = reader.GetBoolean(reader.GetOrdinal("Active")) // Añadir esto para Active
+                                    };
+
+                                    button.Text = product.Name;
+                                    button.Tag = product; // ¡Guarda el objeto Product completo!
+                                    button.Click += btnProductQuick_Click; // Suscribe el evento correcto
+                                    button.Enabled = true; // Habilita el botón
+                                    Logger.Log("Productos rápidos asignados", $"Botón btnProductQuick{buttonIndex} asignado a {product.Name}");
                                 }
                                 else
                                 {
-                                    Logger.Log("Error al asignar botón rápido", $"Botón btnProductQuick{buttonIndex} no encontrado");
+                                    Logger.Log("Advertencia", $"Botón btnProductQuick{buttonIndex} no encontrado en panel2 para asignar producto.");
                                 }
-                                buttonIndex++;
-                            }
-                            if (buttonIndex == 1)
-                            {
-                                Logger.Log("Advertencia en productos rápidos", "No se encontraron productos con QuickAccess = 1 y Active = 1");
-                                MessageBox.Show("No se encontraron productos rápidos. Asegúrese de que existan productos con QuickAccess = 1.", "Advertencia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                             }
                         }
                     }
                 }
-                Logger.Log("Productos rápidos asignados", "Botones configurados correctamente");
+                Logger.Log("Productos rápidos asignados", "Proceso de asignación de botones rápidos completado.");
             }
             catch (Exception ex)
             {
@@ -601,7 +665,7 @@ namespace BalanzaPOSNuevo
                 var button = sender as Button;
                 if (button == null || button.Tag == null) return;
 
-                var quickProduct = button.Tag as ProductQuickInfo;
+                var quickProduct = button.Tag as Product;
                 if (quickProduct == null) return;
 
                 txtSearchProductCode.Text = quickProduct.Code;
@@ -624,7 +688,7 @@ namespace BalanzaPOSNuevo
             try
             {
                 var button = sender as Button;
-                if (button?.Tag is ProductQuickInfo product)
+                if (button?.Tag is Product product)
                 {
                     currentFoundProductId = product.Id;
                     currentFoundProductCode = product.Code;
@@ -689,15 +753,9 @@ namespace BalanzaPOSNuevo
         {
             InitializeComponent();
             File.AppendAllText("debug.log", $"[{DateTime.Now}] MainScreen_Constructor: Iniciando constructor MainScreen\n");
-
-            weightUpdateTimer = new System.Windows.Forms.Timer
-            {
-                Interval = 500,
-                Enabled = false
-            };
-            weightUpdateTimer.Tick += WeightUpdateTimer_Tick;
-            File.AppendAllText("debug.log", $"[{DateTime.Now}] MainScreen_Constructor: weightUpdateTimer inicializado\n");
-
+            _serialPort = new SerialPort(); // Asegúrate de que se inicialice aquí
+            _serialPort.DataReceived += SerialPort_DataReceived;
+           
             ConfiguracionUsuario.LoadSettings();
             PopulateSerialPorts();
             InitializeSaleItemsDataTable();
@@ -710,6 +768,34 @@ namespace BalanzaPOSNuevo
             LoadUserData();
             txtSearchProductCode.Text = "000000";
             txtProductId.Text = "000000";
+            // Asegúrate de que los estados iniciales de los botones sean correctos
+            btnConnectBalanza.Enabled = true;
+            btnDisconnectBalanza.Enabled = false;
+            lblConnectionStatus.Text = "Desconectado";
+            lblConnectionStatus.ForeColor = Color.Red;
+        }
+
+        private void PopulateComPorts()
+        {
+            cmbPorts.Items.Clear();
+            string[] ports = SerialPort.GetPortNames();
+            cmbPorts.Items.AddRange(ports);
+            if (ports.Length > 0)
+            {
+                cmbPorts.SelectedIndex = 0; // Selecciona el primero por defecto
+            }
+        }
+        private void LoadUserSettings()
+        {
+            // Esto debería cargar los valores de ConfiguracionUsuario en tus controles de UI si existen
+            // Ejemplo:
+            // cmbBaudRate.SelectedItem = ConfiguracionUsuario.BaudRate.ToString();
+            // cmbParity.SelectedItem = ConfiguracionUsuario.Parity.ToString();
+            // ...
+            if (!string.IsNullOrEmpty(ConfiguracionUsuario.SerialPort) && cmbPorts.Items.Contains(ConfiguracionUsuario.SerialPort))
+            {
+                cmbPorts.SelectedItem = ConfiguracionUsuario.SerialPort;
+            }
         }
 
         // Constructor que acepta el ID de usuario logueado y una referencia al LoginScreen
@@ -747,10 +833,8 @@ namespace BalanzaPOSNuevo
             ConfiguracionUsuario.LoadSettings();
             SetupSerialPort();
             LoadProducts();
-            ConfigureQuickButtons();
-            weightUpdateTimer.Interval = 100;
-            weightUpdateTimer.Tick += WeightUpdateTimer_Tick;
-            weightUpdateTimer.Start();
+           
+           
 
             File.AppendAllText("debug.log", $"[{DateTime.Now}] MainScreen_Load ejecutado. Columnas en saleItemsDataTable: {string.Join(", ", saleItemsDataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName))}\n");
         }
@@ -839,18 +923,7 @@ namespace BalanzaPOSNuevo
 
 
 
-        private void WeightUpdateTimer_Tick(object sender, EventArgs e)
-        {
-            if (serialPort != null && serialPort.IsOpen && txtWeightDisplay != null)
-            {
-                txtWeightDisplay.Text = currentWeight?.ToString($"F{ConfiguracionUsuario.WeightDecimals}") ?? "0.000";
-            }
-            else
-            {
-                txtWeightDisplay.Text = "0.000";
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Puerto serial no disponible o txtWeightDisplay no inicializado.\n");
-            }
-        }
+        
         private decimal GetWeightFromScale()
         {
             try
@@ -974,9 +1047,12 @@ namespace BalanzaPOSNuevo
                     DataGridView dgvQuickProducts = new DataGridView
                     {
                         Dock = DockStyle.Fill,
-                        AutoGenerateColumns = false
+                        AutoGenerateColumns = false,
+                        AllowUserToAddRows = false, // No se añaden filas por el usuario, siempre hay 10
+                        AllowUserToDeleteRows = false // No se borran filas por el usuario
                     };
                     dgvQuickProducts.Columns.Add(new DataGridViewTextBoxColumn { Name = "ButtonIndex", HeaderText = "Índice Botón", DataPropertyName = "ButtonIndex", ReadOnly = true });
+
                     DataGridViewComboBoxColumn productColumn = new DataGridViewComboBoxColumn
                     {
                         Name = "ProductId",
@@ -984,13 +1060,20 @@ namespace BalanzaPOSNuevo
                         DataPropertyName = "ProductId",
                         DisplayMember = "Name",
                         ValueMember = "Id",
-                        DataSource = GetProductsDataTable()
+                        DataSource = GetProductsForComboBox() // Usa el método que incluye "(Ninguno)"
                     };
                     dgvQuickProducts.Columns.Add(productColumn);
 
                     DataTable dt = new DataTable();
                     dt.Columns.Add("ButtonIndex", typeof(int));
-                    dt.Columns.Add("ProductId", typeof(object));
+                    // dt.Columns.Add("ProductId", typeof(int)); // <<-- CAMBIA ESTO
+                    dt.Columns.Add("ProductId", typeof(object)); // <--- A ESTO (o typeof(int) si manejas 0 como "Ninguno")
+
+                    // Pre-llenar con 10 filas para los 10 botones rápidos
+                    for (int i = 1; i <= 10; i++)
+                    {
+                        dt.Rows.Add(i, DBNull.Value); // Inicializa con ProductId null
+                    }
 
                     using (SQLiteConnection conn = DatabaseHelper.GetConnection())
                     {
@@ -998,32 +1081,35 @@ namespace BalanzaPOSNuevo
                         string query = @"
                     SELECT qp.ButtonIndex, qp.ProductId
                     FROM QuickProducts qp
-                    ORDER BY qp.ButtonIndex";
+                    ORDER BY qp.ButtonIndex"; // Carga lo que ya está configurado
                         using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
                         {
                             using (SQLiteDataReader reader = cmd.ExecuteReader())
                             {
                                 while (reader.Read())
                                 {
-                                    dt.Rows.Add(
-                                        reader.GetInt32(reader.GetOrdinal("ButtonIndex")),
-                                        reader.IsDBNull(reader.GetOrdinal("ProductId")) ? DBNull.Value : (object)reader.GetInt32(reader.GetOrdinal("ProductId"))
-                                    );
+                                    int buttonIndex = reader.GetInt32(reader.GetOrdinal("ButtonIndex"));
+                                    // Encuentra la fila existente por ButtonIndex y actualízala
+                                    DataRow existingRow = dt.AsEnumerable().FirstOrDefault(r => r.Field<int>("ButtonIndex") == buttonIndex);
+                                    if (existingRow != null)
+                                    {
+                                        existingRow["ProductId"] = reader.IsDBNull(reader.GetOrdinal("ProductId")) ? DBNull.Value : (object)reader.GetInt32(reader.GetOrdinal("ProductId"));
+                                    }
                                 }
                             }
                         }
                     }
                     dgvQuickProducts.DataSource = dt;
 
-                    Button btnAddButton = new Button { Text = "Agregar Botón", Dock = DockStyle.Bottom };
-                    btnAddButton.Click += (s, e) =>
+                    // Panel para los botones al final del formulario de configuración
+                    FlowLayoutPanel bottomPanel = new FlowLayoutPanel
                     {
-                        int newIndex = dt.Rows.Count + 1;
-                        dt.Rows.Add(newIndex, DBNull.Value);
-                        Logger.Log("Botón rápido agregado", $"Índice: {newIndex}");
+                        Dock = DockStyle.Bottom,
+                        AutoSize = true,
+                        FlowDirection = FlowDirection.RightToLeft // Alinea los botones a la derecha
                     };
 
-                    Button btnSave = new Button { Text = "Guardar", Dock = DockStyle.Bottom };
+                    Button btnSave = new Button { Text = "Guardar", AutoSize = true, Margin = new Padding(5) };
                     btnSave.Click += (s, e) =>
                     {
                         using (SQLiteConnection conn = DatabaseHelper.GetConnection())
@@ -1031,21 +1117,24 @@ namespace BalanzaPOSNuevo
                             conn.Open();
                             using (var transaction = conn.BeginTransaction())
                             {
-                                string query = "DELETE FROM QuickProducts";
-                                using (SQLiteCommand cmd = new SQLiteCommand(query, conn, transaction))
+                                // 1. Limpiar todos los QuickProducts existentes
+                                string deleteQuery = "DELETE FROM QuickProducts";
+                                using (SQLiteCommand cmd = new SQLiteCommand(deleteQuery, conn, transaction))
                                 {
                                     cmd.ExecuteNonQuery();
                                 }
 
-                                query = "INSERT INTO QuickProducts (ButtonIndex, ProductId) VALUES (@ButtonIndex, @ProductId)";
+                                // 2. Insertar solo los QuickProducts que tienen un ProductId asignado
+                                string insertQuery = "INSERT INTO QuickProducts (ButtonIndex, ProductId) VALUES (@ButtonIndex, @ProductId)";
                                 foreach (DataRow row in dt.Rows)
                                 {
-                                    if (row["ProductId"] != DBNull.Value)
+                                    // Solo inserta si hay un ProductId válido (no DBNull.Value)
+                                    if (row["ProductId"] != DBNull.Value && row["ProductId"] != null)
                                     {
-                                        using (SQLiteCommand cmd = new SQLiteCommand(query, conn, transaction))
+                                        using (SQLiteCommand cmd = new SQLiteCommand(insertQuery, conn, transaction))
                                         {
-                                            cmd.Parameters.AddWithValue("@ButtonIndex", row["ButtonIndex"]);
-                                            cmd.Parameters.AddWithValue("@ProductId", row["ProductId"]);
+                                            cmd.Parameters.AddWithValue("@ButtonIndex", row.Field<int>("ButtonIndex"));
+                                            cmd.Parameters.AddWithValue("@ProductId", row.Field<int>("ProductId"));
                                             cmd.ExecuteNonQuery();
                                         }
                                     }
@@ -1054,14 +1143,17 @@ namespace BalanzaPOSNuevo
                             }
                         }
                         Logger.Log("Configuración de productos rápidos guardada", $"Botones configurados: {dt.Rows.Count}");
-                        LoadQuickProducts();
-                        AssignQuickProductsToButtons();
+                        AssignQuickProductsToButtons(); // ¡IMPORTANTE! Recarga los botones en el formulario principal
                         configForm.Close();
                     };
+                    bottomPanel.Controls.Add(btnSave);
+
+                    Button btnCancel = new Button { Text = "Cancelar", AutoSize = true, Margin = new Padding(5) };
+                    btnCancel.Click += (s, e) => { configForm.Close(); };
+                    bottomPanel.Controls.Add(btnCancel);
 
                     configForm.Controls.Add(dgvQuickProducts);
-                    configForm.Controls.Add(btnAddButton);
-                    configForm.Controls.Add(btnSave);
+                    configForm.Controls.Add(bottomPanel); // Añade el panel con los botones al formulario
                     configForm.ShowDialog();
                 }
             }
@@ -1070,6 +1162,35 @@ namespace BalanzaPOSNuevo
                 Logger.Log("Error al configurar productos rápidos", $"{ex.Message}\nStackTrace: {ex.StackTrace}");
                 MessageBox.Show($"Error al configurar productos rápidos: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        // Nuevo método para poblar el ComboBox del DataGridView con opción "Ninguno"
+        private DataTable GetProductsForComboBox()
+        {
+            DataTable productsDt = new DataTable();
+            productsDt.Columns.Add("Id", typeof(int));
+            productsDt.Columns.Add("Name", typeof(string));
+
+            // Añade una fila para la opción "Ninguno" que permite desasignar un producto
+            productsDt.Rows.Add(DBNull.Value, "(Ninguno)");
+
+            using (SQLiteConnection conn = DatabaseHelper.GetConnection())
+            {
+                conn.Open();
+                // Solo productos activos
+                string query = "SELECT Id, Name FROM Products WHERE Active = 1 ORDER BY Name";
+                using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
+                {
+                    using (SQLiteDataReader reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            productsDt.Rows.Add(reader.GetInt32(0), reader.GetString(1));
+                        }
+                    }
+                }
+            }
+            return productsDt;
         }
 
         private void ShowSaleSummary_Click(object sender, EventArgs e)
@@ -1106,28 +1227,6 @@ namespace BalanzaPOSNuevo
                 MessageBox.Show($"Error al mostrar el resumen: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
-        private DataTable GetProductsDataTable()
-        {
-            DataTable dt = new DataTable();
-            dt.Columns.Add("Id", typeof(int));
-            dt.Columns.Add("Name", typeof(string));
-            using (SQLiteConnection conn = DatabaseHelper.GetConnection())
-            {
-                conn.Open();
-                string query = "SELECT Id, Name FROM Products WHERE Active = 1 ORDER BY Id";
-                using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
-                {
-                    using (SQLiteDataReader reader = cmd.ExecuteReader())
-                    {
-                        while (reader.Read())
-                        {
-                            dt.Rows.Add(reader.GetInt32(0), reader.GetString(1));
-                        }
-                    }
-                }
-            }
-            return dt;
-        }
 
         private void InitializeSaleItemsDataTable()
         {
@@ -1142,38 +1241,60 @@ namespace BalanzaPOSNuevo
             dgvSaleItems.DataSource = saleItemsDataTable;
         }
 
-        private void LoadQuickProducts()
+
+        // Este método maneja el clic de los botones btnProductQuick1 a btnProductQuick10
+
+        private void btnProductQuick_Click(object sender, EventArgs e)
         {
             try
             {
-                int buttonIndex = 1; // Mover la declaración fuera del bloque using
-                using (var connection = new SQLiteConnection("Data Source=BalanzaPOS.db;Version=3;"))
+                Button clickedButton = sender as Button;
+                if (clickedButton == null || clickedButton.Tag == null)
                 {
-                    connection.Open();
-                    string query = "SELECT Code, Name FROM Products WHERE IsQuickProduct = 1 LIMIT 10";
-                    using (var command = new SQLiteCommand(query, connection))
-                    {
-                        using (var reader = command.ExecuteReader())
-                        {
-                            while (reader.Read() && buttonIndex <= 10)
-                            {
-                                Button btn = Controls.Find($"btnProductQuick{buttonIndex}", true).FirstOrDefault() as Button;
-                                if (btn != null)
-                                {
-                                    btn.Text = reader["Name"].ToString();
-                                    btn.Tag = reader["Code"].ToString();
-                                    btn.Click += btnProductQuick_Click;
-                                }
-                                buttonIndex++;
-                            }
-                        }
-                    }
+                    Logger.Log("Advertencia", "Clic en botón rápido sin Tag o botón nulo.");
+                    return;
                 }
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] [LoadQuickProducts] Cargados {buttonIndex - 1} productos rápidos\n");
+
+                // Recupera el objeto Product completo del Tag
+                Product product = clickedButton.Tag as Product;
+
+                if (product != null)
+                {
+                    // Rellenar los campos del formulario principal
+                    txtSearchProductCode.Text = product.Code;
+                    txtSaleProductName.Text = product.Name;
+                    lblSaleProductUnit.Text = product.Unit;
+                    txtSaleProductPrice.Text = product.PricePerUnit.ToString("N" + ConfiguracionUsuario.CurrencyDecimals, CultureInfo.InvariantCulture);
+                    txtRemainingStock.Text = product.Stock.ToString("N" + ConfiguracionUsuario.WeightDecimals, CultureInfo.InvariantCulture);
+
+                    // Lógica para la cantidad inicial (similar a lo que ya tenías)
+                    string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
+                    if (decimal.TryParse(txtWeightDisplay.Text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal weight) && weight > 0)
+                    {
+                        txt1Quantity.Text = weight.ToString(weightFormat, CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        txt1Quantity.Text = 1.ToString(weightFormat, CultureInfo.InvariantCulture);
+                    }
+
+                    // Llama a AddSaleItem con el objeto Product
+                    // Necesitarías un método AddSaleItem(Product product, decimal quantity)
+                    // Si UpdateSaleTable se encarga de añadirlo al dgv, simplemente llama a UpdateSaleTable()
+                    btnAddSaleItem_Click(this, EventArgs.Empty);
+
+                    Logger.Log("Info", $"Producto rápido agregado: Código={product.Code}, Nombre={product.Name}");
+                }
+                else
+                {
+                    Logger.Log("Advertencia", "El Tag del botón rápido no contiene un objeto Product válido.");
+                    MessageBox.Show("Error: El botón rápido no tiene un producto configurado correctamente.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
             catch (Exception ex)
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en LoadQuickProducts: {ex.Message}\n");
+                Logger.Log("Error", $"Error al procesar clic en producto rápido: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show("Error al procesar el producto rápido.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         private void InitializeDatabase()
@@ -1298,72 +1419,7 @@ namespace BalanzaPOSNuevo
             }
         }
 
-        private void ConfigureQuickButtons()
-        {
-            btnProductQuick1.Click += quickButton_Click;
-            btnProductQuick2.Click += quickButton_Click;
-            btnProductQuick3.Click += quickButton_Click;
-            btnProductQuick4.Click += quickButton_Click;
-            btnProductQuick5.Click += quickButton_Click;
-            btnProductQuick6.Click += quickButton_Click;
-            btnProductQuick7.Click += quickButton_Click;
-            btnProductQuick8.Click += quickButton_Click;
-            btnProductQuick9.Click += quickButton_Click;
-            btnProductQuick10.Click += quickButton_Click;
-
-            btnProductQuick1.Tag = "000001";
-            btnProductQuick2.Tag = "000002";
-            btnProductQuick3.Tag = "000003";
-            btnProductQuick4.Tag = "000004";
-            btnProductQuick5.Tag = "000005";
-            btnProductQuick6.Tag = "000006";
-            btnProductQuick7.Tag = "000007";
-            btnProductQuick8.Tag = "000008";
-            btnProductQuick9.Tag = "000009";
-            btnProductQuick10.Tag = "000010";
-        }
-
-        private void quickButton_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                Button button = sender as Button;
-                string productCode = button.Tag?.ToString();
-                long productId = DatabaseHelper.GetProductIdFromCode(productCode);
-                if (productId > 0)
-                {
-                    var row = saleItemsDataTable.NewRow();
-                    row["IdProducto"] = productId;
-                    row["Código"] = productCode;
-                    row["Nombre"] = DatabaseHelper.GetProductNameFromCode(productCode);
-                    row["Cantidad"] = 1; // O usa txt1Quantity.Text si se especifica
-                    row["Unidad"] = DatabaseHelper.GetProductUnitFromCode(productCode);
-                    row["PrecioUnitario"] = DatabaseHelper.GetProductPriceFromCode(productCode);
-                    row["Subtotal"] = row.Field<decimal>("Cantidad") * row.Field<decimal>("PrecioUnitario");
-                    saleItemsDataTable.Rows.Add(row);
-
-                    txtSearchProductCode.Text = productCode;
-                    txtSaleProductName.Text = row["Nombre"].ToString();
-                    txtSaleProductPrice.Text = row.Field<decimal>("PrecioUnitario").ToString($"F{ConfiguracionUsuario.CurrencyDecimals}");
-                    txt1Quantity.Text = row["Cantidad"].ToString();
-                    lblSaleProductUnit.Text = row["Unidad"].ToString();
-                    txtRemainingStock.Text = DatabaseHelper.GetProductStockFromCode(productCode).ToString("F2");
-
-                    UpdateSaleTable();
-                    Logger.Log("Info", $"Producto rápido agregado: Código={productCode}");
-                }
-                else
-                {
-                    Logger.Log("Advertencia", $"Producto no encontrado: Código={productCode}");
-                    MessageBox.Show("Producto no encontrado.", "Advertencia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Error", $"Error al agregar producto rápido: {ex.Message}");
-                MessageBox.Show("Error al agregar el producto rápido.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
+       
         private void txtSearchProduct_TextChanged(object sender, EventArgs e)
         {
             try
@@ -2421,114 +2477,9 @@ namespace BalanzaPOSNuevo
                 MessageBox.Show("Por favor, selecciona un producto para eliminar.", "Advertencia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
-        private void btnProductQuick_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                Button btn = sender as Button;
-                if (btn == null || btn.Tag == null)
-                {
-                    Logger.Log("btnProductQuick_Click", "Botón rápido no tiene Tag asignado [2025-09-22 09:48:00 -05]");
-                    MessageBox.Show("Error: Botón rápido no configurado correctamente.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
 
-                string productCode = btn.Tag.ToString().PadLeft(6, '0');
-                using (var conn = DatabaseHelper.GetConnection())
-                {
-                    conn.Open();
-                    using (var cmd = new SQLiteCommand("SELECT Id, Code, Name, Unit, PricePerUnit, Stock FROM Products WHERE Code = @Code AND Active = 1", conn))
-                    {
-                        cmd.Parameters.AddWithValue("@Code", productCode);
-                        using (var reader = cmd.ExecuteReader())
-                        {
-                            if (reader.Read())
-                            {
-                                long productId = reader.GetInt64(0);
-                                string name = reader.GetString(2);
-                                string unit = reader.GetString(3);
-                                decimal pricePerUnit = reader.GetDecimal(4);
-                                decimal stock = reader.GetDecimal(5);
-
-                                decimal quantity = GetStableWeight();
-                                if (quantity <= 0)
-                                {
-                                    Logger.Log("btnProductQuick_Click", $"Peso inválido: {txtWeightDisplay.Text} [2025-09-22 09:48:00 -05]");
-                                    MessageBox.Show("Peso inválido. Por favor, verifique la balanza.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                    quantity = 1; // Valor por defecto si el peso no está disponible
-                                }
-
-                                if (quantity > stock)
-                                {
-                                    Logger.Log("btnProductQuick_Click", $"Stock insuficiente para {name}. Disponible: {stock} [2025-09-22 09:48:00 -05]");
-                                    MessageBox.Show($"Stock insuficiente para {name}. Disponible: {stock}.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                    return;
-                                }
-
-                                if (this.InvokeRequired)
-                                {
-                                    this.BeginInvoke(new Action(() =>
-                                    {
-                                        txtSaleProductName.Text = name;
-                                        lblSaleProductUnit.Text = unit;
-                                        txtSaleProductPrice.Text = pricePerUnit.ToString("F" + ConfiguracionUsuario.CurrencyDecimals, CultureInfo.InvariantCulture);
-                                        txtRemainingStock.Text = stock.ToString("F2", CultureInfo.InvariantCulture);
-                                        txtSearchProductCode.Text = productCode;
-                                        txt1Quantity.Text = quantity.ToString("N" + ConfiguracionUsuario.WeightDecimals, CultureInfo.InvariantCulture);
-                                    }));
-                                }
-                                else
-                                {
-                                    txtSaleProductName.Text = name;
-                                    lblSaleProductUnit.Text = unit;
-                                    txtSaleProductPrice.Text = pricePerUnit.ToString("F" + ConfiguracionUsuario.CurrencyDecimals, CultureInfo.InvariantCulture);
-                                    txtRemainingStock.Text = stock.ToString("F2", CultureInfo.InvariantCulture);
-                                    txtSearchProductCode.Text = productCode;
-                                    txt1Quantity.Text = quantity.ToString("N" + ConfiguracionUsuario.WeightDecimals, CultureInfo.InvariantCulture);
-                                }
-
-                                Logger.Log("btnProductQuick_Click", $"Campos de productPanel actualizados: Nombre={name}, Unidad={unit}, Precio={pricePerUnit}, Stock={stock}, Código={productCode}, Cantidad={quantity} [2025-09-22 09:48:00 -05]");
-
-                                btnAddSaleItem_Click(sender, e);
-                            }
-                            else
-                            {
-                                Logger.Log("btnProductQuick_Click", $"Producto con código {productCode} no encontrado o no activo [2025-09-22 09:48:00 -05]");
-                                MessageBox.Show($"Producto con código {productCode} no encontrado.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                if (this.InvokeRequired)
-                                {
-                                    this.BeginInvoke(new Action(() =>
-                                    {
-                                        txtSaleProductName.Text = "";
-                                        lblSaleProductUnit.Text = "";
-                                        txtSaleProductPrice.Text = "";
-                                        txtRemainingStock.Text = "";
-                                        txtSearchProductCode.Text = "";
-                                        txt1Quantity.Text = "";
-                                    }));
-                                }
-                                else
-                                {
-                                    txtSaleProductName.Text = "";
-                                    lblSaleProductUnit.Text = "";
-                                    txtSaleProductPrice.Text = "";
-                                    txtRemainingStock.Text = "";
-                                    txtSearchProductCode.Text = "";
-                                    txt1Quantity.Text = "";
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Error en btnProductQuick_Click", $"{ex.Message}\nStackTrace: {ex.StackTrace} [2025-09-22 09:48:00 -05]");
-                MessageBox.Show($"Error al cargar producto rápido: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-         private decimal GetStableWeight()
+       
+        private decimal GetStableWeight()
 {
     try
     {
@@ -2834,7 +2785,6 @@ namespace BalanzaPOSNuevo
                 }
 
                 LoadProductData();
-                LoadQuickProducts();
                 AssignQuickProductsToButtons();
                 ClearProductFields();
                 MessageBox.Show("Producto agregado exitosamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -3558,8 +3508,8 @@ namespace BalanzaPOSNuevo
                         _serialPort.Close();
                         Logger.Log("Puerto serial cerrado", $"Puerto: {_serialPort.PortName}");
                     }
-                    _serialPort.Dispose();
-                    _serialPort = null;
+                    _serialPort.Dispose(); // Liberar recursos
+                    _serialPort = null;    // Anular la referencia
                     Logger.Log("Puerto serial liberado", "Balanza desconectada");
                 }
 
@@ -3568,9 +3518,9 @@ namespace BalanzaPOSNuevo
                 btnConnectBalanza.Enabled = true;
                 btnDisconnectBalanza.Enabled = false;
                 txtWeightDisplay.Text = string.Empty;
-                txtWeightDisplay.Refresh();
+                txtWeightDisplay.Refresh(); // Esto está bien en Windows Forms
 
-                // Detener temporizador
+                // Detener temporizador (si existe y se usa para el peso)
                 if (weightUpdateTimer != null)
                 {
                     weightUpdateTimer.Stop();
@@ -4397,46 +4347,41 @@ namespace BalanzaPOSNuevo
                     return;
                 }
 
+                // Si el puerto seleccionado es diferente al guardado, actualiza la configuración.
                 if (selectedPort != ConfiguracionUsuario.SerialPort)
                 {
                     ConfiguracionUsuario.SaveSettings(
                         ConfiguracionUsuario.WeightDecimals,
                         ConfiguracionUsuario.CurrencyDecimals,
                         ConfiguracionUsuario.CurrencySymbol,
-                        ConfiguracionUsuario.BaudRate,
+                        ConfiguracionUsuario.BaudRate, // Asume que BaudRate, Parity, DataBits, StopBits vienen de tu UI o están fijos
                         selectedPort,
                         ConfiguracionUsuario.Parity,
                         ConfiguracionUsuario.DataBits,
                         ConfiguracionUsuario.StopBits
                     );
+                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnConnectBalanza_Click: Configuración de puerto actualizada a {selectedPort}\n");
                 }
 
+                // Llamar a SetupSerialPort para configurar y abrir el puerto.
                 SetupSerialPort();
-                if (weightUpdateTimer == null)
-                {
-                    weightUpdateTimer = new System.Windows.Forms.Timer
-                    {
-                        Interval = 500,
-                        Enabled = true
-                    };
-                    weightUpdateTimer.Tick += WeightUpdateTimer_Tick;
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnConnectBalanza_Click: weightUpdateTimer inicializado\n");
-                }
-                else
-                {
-                    weightUpdateTimer.Start();
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnConnectBalanza_Click: weightUpdateTimer iniciado\n");
-                }
 
+                // Inicializar o iniciar el temporizador.
+                
+                // Actualizar el estado de la UI.
                 lblConnectionStatus.Text = "Conectado";
                 lblConnectionStatus.ForeColor = Color.Green;
                 btnConnectBalanza.Enabled = false;
                 btnDisconnectBalanza.Enabled = true;
-                if (cmbPorts.Items.Count > 0)
+
+                // Asegurarse de que el ComboBox muestre el puerto conectado
+                if (cmbPorts.Items.Count > 0 && cmbPorts.SelectedItem?.ToString() != ConfiguracionUsuario.SerialPort)
                 {
                     cmbPorts.SelectedItem = ConfiguracionUsuario.SerialPort;
                 }
+
                 File.AppendAllText("debug.log", $"[{DateTime.Now}] btnConnectBalanza_Click: Balanza conectada exitosamente\n");
+                MessageBox.Show($"Balanza conectada al puerto {ConfiguracionUsuario.SerialPort} con éxito.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -4446,6 +4391,12 @@ namespace BalanzaPOSNuevo
                 lblConnectionStatus.ForeColor = Color.Red;
                 btnConnectBalanza.Enabled = true;
                 btnDisconnectBalanza.Enabled = false;
+
+                // Asegurarse de detener el temporizador en caso de fallo
+                if (weightUpdateTimer != null && weightUpdateTimer.Enabled)
+                {
+                    weightUpdateTimer.Stop();
+                }
             }
         }
 
@@ -4603,13 +4554,7 @@ namespace BalanzaPOSNuevo
         {
             try
             {
-                if (weightUpdateTimer != null)
-                {
-                    weightUpdateTimer.Stop();
-                    weightUpdateTimer.Tick -= WeightUpdateTimer_Tick;
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnLogout_Click: weightUpdateTimer detenido\n");
-                }
-
+               
                 if (serialPort != null && serialPort.IsOpen)
                 {
                     serialPort.Close();
