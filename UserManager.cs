@@ -2,6 +2,7 @@
 using BCrypt.Net;
 using System;
 using System.Data.SQLite;
+using BalanzaPOSNuevo.Helpers;
 
 namespace BalanzaPOSNuevo
 {

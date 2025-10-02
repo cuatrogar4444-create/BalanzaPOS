@@ -2,6 +2,7 @@
 using ClosedXML.Excel;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Data;
 using System.Data.SQLite;
 using System.Drawing;
@@ -14,6 +15,12 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Threading;
 using static System.Runtime.CompilerServices.RuntimeHelpers;
+using BalanzaPOSNuevo.Models; // Ajusta si tu namespace raíz es diferente o si moviste los modelos
+using BalanzaPOSNuevo.Services; // Ajusta si tu namespace raíz es diferente o si moviste los servicios
+using BalanzaPOSNuevo.Helpers; // Ajusta si tu namespace raíz es diferente o si moviste los helpers
+using Microsoft.VisualBasic;
+
+
 
 namespace BalanzaPOSNuevo
 {
@@ -25,7 +32,6 @@ namespace BalanzaPOSNuevo
 
         #region Campos de Clase
         private Timer demoWeightTimer;
-        private SerialPort serialPort;
         private DataTable productDataTable = new DataTable();
         private DataTable userDataTable = new DataTable();
         private DataTable saleItemsDataTable = new DataTable();
@@ -48,21 +54,22 @@ namespace BalanzaPOSNuevo
         private decimal? currentWeight;
         private long lastSaleId;
         private string bufferSerial = string.Empty; // Variable a nivel de clase para acumular datos
+        private ProductService _productService;
+        private SaleService _saleService;
+        private QuickProductService _quickProductService;
+        private ScaleService _scaleService;
+        private Product _selectedProduct;
+        private bool balanzaReceivingData = false;
+        private System.Windows.Forms.Timer balanzaHeartbeatTimer; // Temporizador para detectar inactividad      // Bandera para indicar si hubo recepción de datos
+        private const int HEARTBEAT_INTERVAL_MS = 3000;         // 3 segundos
+        private bool _isQuickButtonClick = false; // ⭐ DECLARA ESTA VARIABLE AQUÍ
+        private bool _isProcessingScaleData = false;
+        private bool _isProcessingUIUpdate = false; // Bandera unificada
+
         #endregion
 
         // Asegúrate de que esta clase esté definida en tu proyecto
-        public class Product
-        {
-            public int Id { get; set; }
-            public string Code { get; set; }
-            public string Name { get; set; }
-            public string Unit { get; set; }
-            public decimal PricePerUnit { get; set; }
-            public decimal Stock { get; set; }
-            public decimal MinimumStock { get; set; } // ¡CORRECCIÓN AQUÍ! Debe coincidir con la BD
-            public bool Active { get; set; } //
-                                             // Otras propiedades relevantes como Active, etc.
-        }
+
         public MainScreen(long userId, bool isAdmin)
         {
             InitializeComponent();
@@ -70,24 +77,27 @@ namespace BalanzaPOSNuevo
             File.AppendAllText("debug.log", $"[{DateTime.Now}] MainScreen_Constructor: Iniciando, UserId: {userId}, IsAdmin: {isAdmin}\n");
             Session.UserId = (int)userId;
             Session.IsAdmin = isAdmin;
-
+            InitializeServices(); 
             DatabaseHelper.InitializeDatabase();
             ConfiguracionUsuario.LoadSettings();
 
             saleItemsDataTable = new DataTable();
-            InitializeSaleItemsDataTable();
             InitializeDataGridViews();
             dgvSaleItems.DataSource = saleItemsDataTable;
-
+             // ⭐ Aquí se inicializa
+                                                                                                  // ...
             btnConnectBalanza.Enabled = true;
+            btnDisconnectBalanza.Enabled = false;
+            UpdateBalanzaStatusUI("Desconectada", Color.Gray);
             btnNewSale.Enabled = true;
             btnFinalizeSale.Enabled = true;
             this.FormClosing += MainScreen_FormClosing;
             PopulateSerialPorts();
             SetupAdminButtons();
             InitializeReportControls();
-            LoadUserData();
-            LoadProducts();
+            //LoadUserData();
+            LoadProductsToDataGridView();
+            dgvProducts.CellContentClick += dgvProducts_CellContentClick;
             UpdateSaleTable();
             File.AppendAllText("debug.log", $"[{DateTime.Now}] MainScreen_Constructor: Completado\n");
         }
@@ -96,14 +106,14 @@ namespace BalanzaPOSNuevo
             // Si el usuario es administrador, habilita los botones de administración.
             if (Session.IsAdmin)
             {
-                btnAdmin.Visible = true;
+                btnTestQuickProduct.Visible = true;
                 // Oculta otros elementos que no necesites
                 // ...
             }
             else
             {
                 // Si no es administrador, asegura que los botones estén ocultos o deshabilitados.
-                btnAdmin.Visible = false;
+                btnTestQuickProduct.Visible = false;
                 btnDevolucion.Visible = false;
             }
         }
@@ -113,7 +123,7 @@ namespace BalanzaPOSNuevo
 
         private void SetupAdminButtons()
         {
-            btnAdmin.Visible = Session.IsAdmin;
+            btnTestQuickProduct.Visible = Session.IsAdmin;
             btnDevolucion.Visible = Session.IsAdmin;
         }
 
@@ -136,7 +146,7 @@ namespace BalanzaPOSNuevo
             Size buttonSize = new Size(120, 40);
 
             this.txtProductName.Font = standardFont;
-            this.txtProductId.Font = standardFont;
+            this.txtProductCode.Font = standardFont;
             this.txtProductPrice.Font = standardFont;
             this.txtStock.Font = standardFont;
             this.txtMinimumStock.Font = standardFont;
@@ -151,7 +161,7 @@ namespace BalanzaPOSNuevo
             this.btnClearProductFields.Font = standardFont;
 
             this.txtProductName.Size = textBoxSize;
-            this.txtProductId.Size = textBoxSize;
+            this.txtProductCode.Size = textBoxSize;
             this.txtProductPrice.Size = textBoxSize;
             this.txtStock.Size = textBoxSize;
             this.txtMinimumStock.Size = textBoxSize;
@@ -171,14 +181,14 @@ namespace BalanzaPOSNuevo
             this.label5.Font = standardFont;
             this.label23.Font = standardFont;
             this.lblSaleProductUnit.Font = standardFont;
-            this.btnSearchProduct.Font = standardFont;
+           // this.btnSearchProduct.Font = standardFont;
             this.btnAddSaleItem.Font = standardFont;
 
             this.txtSearchProductCode.Size = textBoxSize;
             this.txtSaleProductPrice.Size = textBoxSize;
             this.txt1Quantity.Size = textBoxSize;
             this.txtRemainingStock.Size = textBoxSize;
-            this.btnSearchProduct.Size = new Size(200, 40);
+          //  this.btnSearchProduct.Size = new Size(200, 40);
             this.btnAddSaleItem.Size = new Size(200, 40);
 
             this.txtDiscount.Font = standardFont;
@@ -233,7 +243,7 @@ namespace BalanzaPOSNuevo
                 if (summaryForm.ShowDialog() == DialogResult.OK)
                 {
                     btnNewSale.Enabled = true;
-                    DatabaseHelper.SaveSaleToDatabase(saleItemsDataTable, total, discount, paymentMethod, Session.Username, 1);
+                    _saleService.FinalizeSale(discount, paymentMethod, Session.Username, 1);
                     ClearSaleInterface();
                 }
             }
@@ -319,37 +329,127 @@ namespace BalanzaPOSNuevo
             _serialPort.StopBits = StopBits.One;
             _serialPort.ReadTimeout = 500; // Tiempo de espera para la lectura
 
-            _serialPort.DataReceived += SerialPort_DataReceived;
+            _serialPort.DataReceived += serialPort_DataReceived;
         }
-        private void SerialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
+
+
+        private void BalanzaHeartbeatTimer_Tick(object sender, EventArgs e)
         {
-            // Esto debe ejecutarse en el hilo de la UI para actualizar el control
-            this.Invoke(new MethodInvoker(delegate
+            if (_serialPort != null && _serialPort.IsOpen) // ⭐ Comprobar si el puerto está realmente abierto
             {
-                bufferSerial += serialPort.ReadExisting(); // Acumula todos los datos recibidos
-
-                // Asumiendo que cada "lectura" de peso termina con un salto de línea o retorno de carro
-                if (bufferSerial.Contains("\r") || bufferSerial.Contains("\n"))
+                if (!balanzaReceivingData)
                 {
-                    string[] lines = bufferSerial.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (lines.Length > 0)
-                    {
-                        string lastLine = lines[lines.Length - 1].Trim(); // Toma la última línea completa
-                        if (decimal.TryParse(lastLine, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal weight))
-                        {
-                            txtWeightDisplay.Text = weight.ToString("F3", CultureInfo.InvariantCulture); // Formatea a 3 decimales
-                            Logger.Log("Peso Balanza", $"Peso: {weight:F3}");
-                        }
-                        else
-                        {
-                            Logger.Log("Advertencia", $"No se pudo parsear el peso: '{lastLine}'");
-                        }
-                    }
-                    bufferSerial = string.Empty; // Limpia el buffer después de procesar
+                    // Si no hemos recibido datos en el intervalo, asumimos desconexión
+                    UpdateBalanzaStatusUI("Desconectada (Inactiva)", Color.Red);
+                    Logger.Log("Balanza", "Balanza inactiva detectada. Actualizando estado a desconectada.");
                 }
-            }));
+                // Si sí recibimos datos, el DataReceived ya actualiza el estado a verde.
+                balanzaReceivingData = false; // Resetear para la próxima comprobación
+            }
+            else
+            {
+                // Si el puerto no está abierto, el temporizador no debería estar corriendo o debe mostrar desconectado
+                UpdateBalanzaStatusUI("Desconectada", Color.Red);
+                balanzaHeartbeatTimer.Stop(); // Detener el temporizador si el puerto no está abierto
+                Logger.Log("Balanza", "Temporizador de heartbeat detenido: Puerto serial no está abierto.");
+            }
+        }
+        // En el constructor de MainScreen (o en un método de inicialización):
+        private void InitializeBalanzaHeartbeat()
+        {
+            balanzaHeartbeatTimer = new System.Windows.Forms.Timer();
+            balanzaHeartbeatTimer.Interval = HEARTBEAT_INTERVAL_MS;
+            balanzaHeartbeatTimer.Tick += BalanzaHeartbeatTimer_Tick;
+            //balanzaHeartbeatTimer.Start();
         }
 
+        private void UpdateBalanzaStatusUI(string status, Color color)
+        {
+            if (lblStatusBalanza.InvokeRequired)
+            {
+                this.Invoke((MethodInvoker)delegate
+                {
+                    lblStatusBalanza.Text = status;
+                    lblStatusBalanza.BackColor = color; // ⭐ Cambia a BackColor
+                    lblStatusBalanza.ForeColor = Color.White; // O el color de texto que prefieras para contraste
+                });
+            }
+            else
+            {
+                lblStatusBalanza.Text = status;
+                lblStatusBalanza.BackColor = color; // ⭐ Cambia a BackColor
+                lblStatusBalanza.ForeColor = Color.White;
+            }
+        }
+
+        // ARCHIVO: MainScreen.cs
+
+        private void serialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
+        {
+            if (_serialPort == null || !_serialPort.IsOpen)
+            {
+                UpdateBalanzaStatusUI("Desconectada", Color.Red);
+                return;
+            }
+
+            try
+            {
+                string receivedData = _serialPort.ReadLine();
+                // Agrega un log para ver los datos EXACTOS que recibes de la balanza
+                Logger.Log("Balanza Data", $"Datos recibidos: '{receivedData}'");
+
+                // ⭐ PASO 1: Procesar los datos de la balanza
+                // Si la balanza envía PUNTO como decimal (lo más común):
+                // Elimina caracteres no numéricos, y reemplaza la coma por punto si sabes que la balanza envía coma.
+                // O limpia la cadena antes de parsear para solo dejar números y un punto.
+                string cleanedWeightString = receivedData.Trim(); // Por ejemplo, "  1.234kg\r\n"
+                                                                  // Aquí debes adaptar esta lógica a la estructura EXACTA de tu balanza.
+                                                                  // Por ejemplo, si siempre termina en "kg\r\n" y el peso está al inicio:
+                cleanedWeightString = cleanedWeightString.Replace("kg", "").Replace("\r", "").Replace("\n", "").Trim();
+
+                // ⭐ MUY IMPORTANTE: SI TU BALANZA USA COMA COMO DECIMAL Y TU SISTEMA ESPERA PUNTO, CONVIERTE:
+                cleanedWeightString = cleanedWeightString.Replace(',', '.'); // Si la balanza usa coma, pero decimal.Parse espera punto.
+
+                // ⭐ PASO 2: Parsear el peso a decimal
+                decimal weight;
+                // Usa InvariantCulture para PARSEAR si la balanza envía un PUNTO decimal.
+                // Usa CultureInfo.CurrentCulture si la balanza envía COMA decimal (y tu sistema usa coma).
+                // Lo más seguro con dispositivos es PARSEAR con InvariantCulture si usas PUNTO,
+                // o usar una culture específica si sabes que la balanza usa COMA.
+                if (!decimal.TryParse(cleanedWeightString, NumberStyles.Any, CultureInfo.InvariantCulture, out weight))
+                {
+                    Logger.Log("Error Balanza", $"No se pudo parsear el peso '{cleanedWeightString}'. Datos crudos: '{receivedData}'");
+                    // No se pudo obtener el peso, salir o mostrar un error.
+                    return;
+                }
+                int decimalesPeso = ConfiguracionUsuario.WeightDecimals; // Asumiendo que esta propiedad existe
+                weight = Math.Round(weight, decimalesPeso); // ⭐ Redondea el valor al número de decimales configurado
+
+                string weightFormat = "N" + decimalesPeso; // Usa la variable local si la obtuviste
+
+                this.Invoke((MethodInvoker)delegate
+                {
+                    _isProcessingUIUpdate = true;
+                    Logger.Log("AutoVenta DEBUG", "Balanza: Actualizando txtWeightDisplay.Text.");
+                    
+                    balanzaReceivingData = true; // Indicar que se recibieron datos
+
+                    // ⭐ CORRECCIÓN: Usar CurrentCulture para MOSTRAR en la UI
+                    txtWeightDisplay.Text = weight.ToString(weightFormat, CultureInfo.CurrentCulture);
+                   
+                    Logger.Log("AutoVenta DEBUG", "Balanza: Fin de actualización de UI."); // AÑADIR este log
+                    _isProcessingUIUpdate = false;
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("Error Balanza", $"Error en serialPort_DataReceived: {ex.Message}. StackTrace: {ex.StackTrace}");
+                this.Invoke((MethodInvoker)delegate
+                {
+                    UpdateBalanzaStatusUI("Error de Lectura", Color.OrangeRed);
+                });
+            }
+        }
         private void ProcessSerialData(SerialPort port)
         {
             try
@@ -411,12 +511,12 @@ namespace BalanzaPOSNuevo
                     weightDecimals: ConfiguracionUsuario.WeightDecimals,
                     currencyDecimals: ConfiguracionUsuario.CurrencyDecimals,
                     currencySymbol: ConfiguracionUsuario.CurrencySymbol,
-                    baudRate: newBaudRate,
-                    serialPort: newPortName,
-                    parity: parity,
-                    dataBits: dataBits,
-                    stopBits: stopBits
-                );
+                    scalePortName: ConfiguracionUsuario.ScalePortName, // <-- Corregido
+                    scaleBaudRate: ConfiguracionUsuario.ScaleBaudRate, // <-- Corregido
+                    scaleParity: ConfiguracionUsuario.ScaleParity, // <-- Corregido (aunque este ya estaba bien con el prefijo)
+                    scaleDataBits: ConfiguracionUsuario.ScaleDataBits, // <-- Corregido
+                    scaleStopBits: ConfiguracionUsuario.ScaleStopBits // <-- Corregido
+                    );
 
                 // Reiniciar el puerto serial
                 if (_serialPort != null)
@@ -440,13 +540,13 @@ namespace BalanzaPOSNuevo
                     ReadTimeout = 500,
                     WriteTimeout = 500
                 };
-                _serialPort.DataReceived += SerialPort_DataReceived;
+                _serialPort.DataReceived += serialPort_DataReceived;
                 _serialPort.Open();
                 Logger.Log("Puerto serial reconfigurado", $"Puerto: {newPortName}, BaudRate: {newBaudRate}, Parity: {parity}, DataBits: {dataBits}, StopBits: {stopBits}");
 
                 // Actualizar UI
-                lblConnectionStatus.Text = "Conectado";
-                lblConnectionStatus.ForeColor = Color.Green;
+                lblStatusBalanza.Text = "Conectado";
+                lblStatusBalanza.ForeColor = Color.Green;
                 btnConnectBalanza.Enabled = false;
                 btnDisconnectBalanza.Enabled = true;
 
@@ -462,28 +562,84 @@ namespace BalanzaPOSNuevo
             {
                 Logger.Log("Error al reconfigurar puerto serial", $"{ex.Message}\nStackTrace: {ex.StackTrace}");
                 MessageBox.Show($"Error al reconfigurar puerto serial: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                lblConnectionStatus.Text = "Desconectado";
-                lblConnectionStatus.ForeColor = Color.Red;
+                lblStatusBalanza.Text = "Desconectado";
+                lblStatusBalanza.ForeColor = Color.Red;
                 btnConnectBalanza.Enabled = true;
                 btnDisconnectBalanza.Enabled = false;
             }
         }
 
-      
+        private void LoadScaleSettingsAndConnect()
+        {
+            // Cargar la configuración actual de la balanza
+            ConfiguracionUsuario.LoadSettings();
+
+            // Solo intentar conectar si hay un puerto configurado
+            if (!string.IsNullOrEmpty(ConfiguracionUsuario.ScalePortName))
+            {
+                try
+                {
+                    // ⭐ Esta es la clave: Llama a SetupSerialPort() aquí.
+                    // SetupSerialPort ya se encarga de _serialPort = new SerialPort(...), 
+                    // _serialPort.Open(), y de asignar el DataReceived event.
+                    SetupSerialPort();
+
+                    // Si la conexión fue exitosa, iniciamos el timer heartbeat
+                    if (_serialPort != null && _serialPort.IsOpen)
+                    {
+                        if (balanzaHeartbeatTimer != null && !balanzaHeartbeatTimer.Enabled)
+                        {
+                            balanzaHeartbeatTimer.Start();
+                            Logger.Log("Balanza", "Temporizador de heartbeat iniciado automáticamente.");
+                        }
+                        UpdateBalanzaStatusUI("Conectada", Color.Green); // Establece el color correcto si tiene éxito
+                        btnConnectBalanza.Enabled = false;
+                        btnDisconnectBalanza.Enabled = true;
+                    }
+                    else
+                    {
+                        // Si SetupSerialPort no lanzó excepción pero serialPort no está abierto (ej. puerto ocupado)
+                        UpdateBalanzaStatusUI("Desconectada", Color.Red);
+                        btnConnectBalanza.Enabled = true;
+                        btnDisconnectBalanza.Enabled = false;
+                        Logger.Log("Balanza", $"Error: Puerto '{ConfiguracionUsuario.ScalePortName}' no pudo abrirse aunque SetupSerialPort no lanzó excepción.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("Error de Balanza", $"Fallo la conexión automática al inicio en {ConfiguracionUsuario.ScalePortName}: {ex.Message}");
+                    UpdateBalanzaStatusUI("Desconectada", Color.Red); // El color rojo es correcto aquí
+                    btnConnectBalanza.Enabled = true;
+                    btnDisconnectBalanza.Enabled = false;
+                    // Asegurarse de detener el temporizador si ya estaba corriendo y falló la reconexión
+                    if (balanzaHeartbeatTimer != null && balanzaHeartbeatTimer.Enabled)
+                    {
+                        balanzaHeartbeatTimer.Stop();
+                    }
+                }
+            }
+            else
+            {
+                // Si no hay puerto configurado, mostrar como desconectado y habilitar conectar
+                UpdateBalanzaStatusUI("Desconectada (Sin configurar)", Color.Gray);
+                btnConnectBalanza.Enabled = true;
+                btnDisconnectBalanza.Enabled = false;
+            }
+        }
         private void InitializeConfiguration()
         {
             try
             {
                 ConfiguracionUsuario.SaveSettings(
-                    weightDecimals: 2,
-                    currencyDecimals: ConfiguracionUsuario.CurrencyDecimals,
-                    currencySymbol: ConfiguracionUsuario.CurrencySymbol,
-                    baudRate: ConfiguracionUsuario.BaudRate,
-                    serialPort: ConfiguracionUsuario.SerialPort,
-                    parity: ConfiguracionUsuario.Parity,
-                    dataBits: ConfiguracionUsuario.DataBits,
-                    stopBits: ConfiguracionUsuario.StopBits
-                );
+            weightDecimals: ConfiguracionUsuario.WeightDecimals,
+            currencyDecimals: ConfiguracionUsuario.CurrencyDecimals,
+            currencySymbol: ConfiguracionUsuario.CurrencySymbol,
+            scalePortName: ConfiguracionUsuario.ScalePortName, // <-- Corregido
+            scaleBaudRate: ConfiguracionUsuario.ScaleBaudRate, // <-- Corregido
+            scaleParity: ConfiguracionUsuario.ScaleParity, // <-- Corregido (aunque este ya estaba bien con el prefijo)
+            scaleDataBits: ConfiguracionUsuario.ScaleDataBits, // <-- Corregido
+            scaleStopBits: ConfiguracionUsuario.ScaleStopBits // <-- Corregido
+        );
                 Logger.Log("Configuración inicializada", $"WeightDecimals={ConfiguracionUsuario.WeightDecimals}");
             }
             catch (Exception ex)
@@ -498,18 +654,9 @@ namespace BalanzaPOSNuevo
 
         private void MainScreen_FormClosing(object sender, FormClosingEventArgs e)
         {
-            try
-            {
-                DisconnectSerialPort();
-                weightUpdateTimer?.Stop();
-                weightUpdateTimer?.Dispose();
-                Logger.Log("Formulario MainScreen cerrándose", "Recursos liberados");
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Error al cerrar MainScreen", $"{ex.Message}\nStackTrace: {ex.StackTrace}");
-            }
+            _scaleService.Dispose(); // Libera los recursos del puerto serial
         }
+
 
         // Método en tu clase MainScreen
         private void CheckStockWarning(string productCode)
@@ -534,11 +681,11 @@ namespace BalanzaPOSNuevo
         private void CargarConfiguracion()
         {
             // Reemplaza la llamada antigua con las nuevas llamadas
-            int baudRate = ConfiguracionUsuario.BaudRate;
-            string serialPort = ConfiguracionUsuario.SerialPort;
-            Parity parity = ConfiguracionUsuario.Parity;
-            int dataBits = ConfiguracionUsuario.DataBits;
-            StopBits stopBits = ConfiguracionUsuario.StopBits;
+            int baudRate = ConfiguracionUsuario.ScaleBaudRate;
+            string serialPort = ConfiguracionUsuario.ScalePortName;
+            Parity parity = ConfiguracionUsuario.ScaleParity;
+            int dataBits = ConfiguracionUsuario.ScaleDataBits;
+            StopBits stopBits = ConfiguracionUsuario.ScaleStopBits;
 
             // Asigna los valores a tus controles de la interfaz de usuario, si los tienes
             // Ejemplo:
@@ -546,22 +693,29 @@ namespace BalanzaPOSNuevo
             // comboPorts.Text = serialPort;
         }
 
+        // EN BalanzaPOSNuevo\BalanzaPOSNuevo\MainScreen.cs
+
         private void ClearSaleInterface()
         {
             try
             {
-                saleItemsDataTable.Clear();
+                // ⭐ ELIMINAR: saleItemsDataTable.Clear();
+
+
                 txtSearchProductCode.Text = "";
                 txtSaleProductName.Text = "";
                 lblSaleProductUnit.Text = "";
                 txtSaleProductPrice.Text = "";
                 txtRemainingStock.Text = "";
-                txt1Quantity.Text = "";
-                txtDiscount.Text = "";
+                txt1Quantity.Text = "1";
+                txtDiscount.Text = "0.00";
                 txtTotalSale.Text = "0.00";
-                dgvSaleItems.DataSource = null;
-                dgvSaleItems.DataSource = saleItemsDataTable;
+
+                // NO TOCAR dgvSaleItems.DataSource. Solo actualizar el control.
                 dgvSaleItems.Refresh();
+
+                _selectedProduct = null; // Asegúrate de limpiar el producto seleccionado
+
                 File.AppendAllText("debug.log", $"[{DateTime.Now}] ClearSaleInterface: Interfaz de venta limpiada\n");
             }
             catch (Exception ex)
@@ -584,69 +738,68 @@ namespace BalanzaPOSNuevo
 
         private void AssignQuickProductsToButtons()
         {
-            // Primero, desuscribe todos los eventos y limpia los botones
-            for (int i = 1; i <= 10; i++) // Asume 10 botones rápidos fijos
+            // Limpieza inicial de botones
+            for (int i = 1; i <= 10; i++)
             {
                 Button btn = panel2.Controls.Find($"btnProductQuick{i}", true).FirstOrDefault() as Button;
                 if (btn != null)
                 {
-                    btn.Click -= btnProductQuick_Click; // Desuscribe el evento anterior
-                    btn.Text = "Vacío"; // Texto por defecto
-                    btn.Tag = null;     // Limpia el Tag (importante)
-                    btn.Enabled = false; // Deshabilita el botón si no hay producto
+                    btn.Click -= btnProductQuick_Click;
+                    btn.Text = "Vacío";
+                    btn.Tag = null;
+                    btn.Enabled = false; // Se deshabilitan inicialmente
                 }
             }
 
             try
             {
-                using (var conn = DatabaseHelper.GetConnection())
+                Logger.Log("Productos rápidos asignados", "Iniciando carga de botones rápidos desde el servicio.");
+
+                // ⭐ ESTA ES LA CLAVE: ¿QUÉ DEVUELVE ESTE MÉTODO?
+                Dictionary<int, Product> assignedProducts = _quickProductService.GetAssignedQuickProducts();
+
+                // ⭐ AÑADIR ESTE LOG PARA DEPURAR
+                if (assignedProducts == null || assignedProducts.Count == 0)
                 {
-                    conn.Open();
-                    // Consulta que une QuickProducts con Products para obtener toda la información del producto
-                    string query = @"
-                     SELECT qp.ButtonIndex, p.Id, p.Code, p.Name, p.Unit, p.PricePerUnit, p.Stock, p.MinimumStock, p.Active
-                     FROM QuickProducts qp
-                     JOIN Products p ON qp.ProductId = p.Id
-                     WHERE p.Active = 1
-                     ORDER BY qp.ButtonIndex";
-
-                    using (var cmd = new SQLiteCommand(query, conn))
+                    Logger.Log("Productos rápidos asignados", "El servicio GetAssignedQuickProducts() devolvió un diccionario vacío o nulo.");
+                }
+                else
+                {
+                    Logger.Log("Productos rápidos asignados", $"El servicio GetAssignedQuickProducts() devolvió {assignedProducts.Count} productos asignados.");
+                    foreach (var entry in assignedProducts)
                     {
-                        using (var reader = cmd.ExecuteReader())
+                        Logger.Log("Productos rápidos asignados", $"  - Botón: {entry.Key}, Producto: {entry.Value?.Name ?? "NULO"}");
+                    }
+                }
+
+                foreach (var entry in assignedProducts)
+                {
+                    int buttonIndex = entry.Key;
+                    Product product = entry.Value; // product podría ser null si el servicio lo devuelve así.
+
+                    var button = panel2.Controls.Find($"btnProductQuick{buttonIndex}", true).FirstOrDefault() as Button;
+                    if (button != null)
+                    {
+                        if (product != null) // ⭐ Asegurarse de que el producto no sea nulo antes de usarlo
                         {
-                            while (reader.Read())
-                            {
-                                int buttonIndex = reader.GetInt32(reader.GetOrdinal("ButtonIndex"));
-
-                                // Busca el botón en el panel2
-                                var button = panel2.Controls.Find($"btnProductQuick{buttonIndex}", true).FirstOrDefault() as Button;
-                                if (button != null)
-                                {
-                                    // Crea un objeto Product completo y lo almacena en el Tag
-                                    Product product = new Product
-                                    {
-                                        Id = reader.GetInt32(reader.GetOrdinal("Id")),
-                                        Code = reader.IsDBNull(reader.GetOrdinal("Code")) ? string.Empty : reader.GetString(reader.GetOrdinal("Code")),
-                                        Name = reader.IsDBNull(reader.GetOrdinal("Name")) ? "N/A" : reader.GetString(reader.GetOrdinal("Name")),
-                                        Unit = reader.IsDBNull(reader.GetOrdinal("Unit")) ? "unidad" : reader.GetString(reader.GetOrdinal("Unit")),
-                                        PricePerUnit = reader.GetDecimal(reader.GetOrdinal("PricePerUnit")),
-                                        Stock = reader.GetDecimal(reader.GetOrdinal("Stock")),
-                                        MinimumStock = reader.IsDBNull(reader.GetOrdinal("MinimumStock")) ? 0 : reader.GetDecimal(reader.GetOrdinal("MinimumStock")), // ¡CORRECCIÓN AQUÍ!
-                                        Active = reader.GetBoolean(reader.GetOrdinal("Active")) // Añadir esto para Active
-                                    };
-
-                                    button.Text = product.Name;
-                                    button.Tag = product; // ¡Guarda el objeto Product completo!
-                                    button.Click += btnProductQuick_Click; // Suscribe el evento correcto
-                                    button.Enabled = true; // Habilita el botón
-                                    Logger.Log("Productos rápidos asignados", $"Botón btnProductQuick{buttonIndex} asignado a {product.Name}");
-                                }
-                                else
-                                {
-                                    Logger.Log("Advertencia", $"Botón btnProductQuick{buttonIndex} no encontrado en panel2 para asignar producto.");
-                                }
-                            }
+                            button.Text = $"{product.Name}\n({product.PricePerUnit.ToString("C", CultureInfo.CurrentCulture)})"; // Mostrar nombre y precio
+                            button.Tag = product; // Guardar el objeto Product completo
+                            button.Click += btnProductQuick_Click;
+                            button.Enabled = true; // ⭐ Habilitar el botón si tiene un producto
+                            Logger.Log("Productos rápidos asignados", $"Botón btnProductQuick{buttonIndex} asignado a {product.Name}");
                         }
+                        else
+                        {
+                            button.Text = $"[{buttonIndex}] Producto no encontrado"; // Mostrar que el producto es nulo
+                            button.Tag = null;
+                            button.Click -= btnProductQuick_Click; // Quitar el evento si no hay producto
+                            button.Enabled = true; // Podrías dejarlo habilitado para asignar, o deshabilitado si no hay nada
+                            Logger.Log("Productos rápidos asignados", $"Botón btnProductQuick{buttonIndex} no tiene producto asignado (NULL).");
+                        }
+                    }
+                    else
+                    {
+                        Logger.Log("Advertencia", $"Botón btnProductQuick{buttonIndex} no encontrado en panel2 para asignar producto.");
                     }
                 }
                 Logger.Log("Productos rápidos asignados", "Proceso de asignación de botones rápidos completado.");
@@ -658,29 +811,76 @@ namespace BalanzaPOSNuevo
             }
         }
 
+        private void ClearQuickProductButtons()
+        {
+            foreach (Control control in panel2.Controls)
+            {
+                if (control is Button button)
+                {
+                    if (int.TryParse(button.Name.Replace("btnQuickProduct", ""), out int buttonNumber))
+                    {
+                        button.Text = $"Rápido {buttonNumber}";
+                        button.Tag = buttonNumber; // Asigna el número del botón como Tag inicial
+                        button.Enabled = false; // Deshabilita por defecto
+                    }
+                }
+            }
+        }
         private void btnQuickProduct_Click(object sender, EventArgs e)
         {
             try
             {
+                _isQuickButtonClick = true; // ⭐ 1. Activar la bandera al inicio del clic del botón rápido
+
                 var button = sender as Button;
-                if (button == null || button.Tag == null) return;
+                if (button == null) return;
+                if (button.Tag == null) return;
 
                 var quickProduct = button.Tag as Product;
                 if (quickProduct == null) return;
 
-                txtSearchProductCode.Text = quickProduct.Code;
+                _selectedProduct = quickProduct; // Asigna el producto seleccionado
+                currentFoundProductId = quickProduct.Id;
+                currentFoundProductCode = quickProduct.Code;
+                currentFoundProductName = quickProduct.Name;
+                currentFoundProductPrice = quickProduct.PricePerUnit;
+
+                // ... tu lógica para llenar los TextBoxes de la UI de venta ...
+                string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
+                string priceFormat = "N" + ConfiguracionUsuario.CurrencyDecimals;
+
+                txtSearchProductCode.Text = quickProduct.Code?.PadLeft(6, '0') ?? string.Empty;
                 txtSaleProductName.Text = quickProduct.Name;
                 lblSaleProductUnit.Text = quickProduct.Unit;
-                txtSaleProductPrice.Text = quickProduct.PricePerUnit.ToString("N" + ConfiguracionUsuario.CurrencyDecimals, CultureInfo.InvariantCulture);
-                txtRemainingStock.Text = quickProduct.Stock.ToString("N" + ConfiguracionUsuario.WeightDecimals, CultureInfo.InvariantCulture);
+                txtSaleProductPrice.Text = quickProduct.PricePerUnit.ToString(priceFormat, CultureInfo.InvariantCulture);
+                txtRemainingStock.Text = quickProduct.Stock.ToString(weightFormat, CultureInfo.InvariantCulture);
 
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] btnQuickProduct_Click: Producto seleccionado: Código={quickProduct.Code}, Nombre={quickProduct.Name}\n");
-                UpdateSaleTable();
+                // Lógica de Cantidad (Peso vs. Unidad)
+                if (decimal.TryParse(txtWeightDisplay.Text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal weight) && weight > 0)
+                {
+                    txt1Quantity.Text = weight.ToString(weightFormat, CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    txt1Quantity.Text = 1.ToString(weightFormat, CultureInfo.InvariantCulture);
+                }
+
+                // NO LLAMES a btnAddSaleItem_Click(null, null); aquí si quieres que sea un paso manual.
+                // Esa línea debe eliminarse por completo.
+
+                Logger.Log("Info", $"Producto rápido cargado: Código={quickProduct.Code}, Nombre={quickProduct.Name}");
             }
             catch (Exception ex)
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en btnQuickProduct_Click: {ex.Message}\nStackTrace: {ex.StackTrace}\n");
-                MessageBox.Show($"Error al seleccionar producto rápido: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Log("Error en btnQuickProduct_Click", $"Error: {ex.Message}");
+            }
+            finally
+            {
+                // ⭐ 2. Desactivar la bandera DESPUÉS de que toda la lógica del clic del botón ha terminado.
+                // El Task.Delay (como sugerí antes) puede ser útil si observas que el evento dgvProducts_SelectionChanged
+                // se dispara casi instantáneamente y la bandera se desactiva antes de que dgvProducts_SelectionChanged lo compruebe.
+                // Pero intentemos sin él primero. Si sigue fallando, lo ponemos.
+                _isQuickButtonClick = false;
             }
         }
         private void ProductButton_Click(object sender, EventArgs e)
@@ -690,6 +890,7 @@ namespace BalanzaPOSNuevo
                 var button = sender as Button;
                 if (button?.Tag is Product product)
                 {
+                    _selectedProduct = product;
                     currentFoundProductId = product.Id;
                     currentFoundProductCode = product.Code;
                     currentFoundProductName = product.Name;
@@ -697,7 +898,7 @@ namespace BalanzaPOSNuevo
 
                     string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
                     string priceFormat = "N" + ConfiguracionUsuario.CurrencyDecimals;
-                    txtProductId.Text = product.Id.ToString();
+                    txtProductCode.Text = product.Id.ToString();
                     txtSearchProductCode.Text = product.Code?.PadLeft(6, '0') ?? string.Empty;
                     txtSaleProductName.Text = product.Name ?? string.Empty;
                     txtSaleProductPrice.Text = product.PricePerUnit.ToString(priceFormat, CultureInfo.InvariantCulture);
@@ -720,7 +921,7 @@ namespace BalanzaPOSNuevo
                     }
 
                     Logger.Log("Producto seleccionado desde botón", $"ID={product.Id}, Code={product.Code}, Name={product.Name}, Price={product.PricePerUnit}, Unit={product.Unit}, Stock={product.Stock}, Quantity={txt1Quantity.Text}");
-                    Logger.Log("Verificación de controles", $"txtProductId.Text={txtProductId.Text}, txtSearchProductCode.Text={txtSearchProductCode.Text}, txtSaleProductName.Text={txtSaleProductName.Text}, txtSaleProductPrice.Text={txtSaleProductPrice.Text}, cboProductUnit.Text={cboProductUnit.Text}, txtRemainingStock.Text={txtRemainingStock.Text}, txt1Quantity.Text={txt1Quantity.Text}, cboWeightUnit.Text={cboWeightUnit.Text}, txtProductId.Visible={txtProductId.Visible}, txtSaleProductName.Visible={txtSaleProductName.Visible}, txtSaleProductPrice.Visible={txtSaleProductPrice.Visible}, txt1Quantity.Visible={txt1Quantity.Visible}");
+                    Logger.Log("Verificación de controles", $"txtProductId.Text={txtProductCode.Text}, txtSearchProductCode.Text={txtSearchProductCode.Text}, txtSaleProductName.Text={txtSaleProductName.Text}, txtSaleProductPrice.Text={txtSaleProductPrice.Text}, cboProductUnit.Text={cboProductUnit.Text}, txtRemainingStock.Text={txtRemainingStock.Text}, txt1Quantity.Text={txt1Quantity.Text}, cboWeightUnit.Text={cboWeightUnit.Text}, txtProductId.Visible={txtProductCode.Visible}, txtSaleProductName.Visible={txtSaleProductName.Visible}, txtSaleProductPrice.Visible={txtSaleProductPrice.Visible}, txt1Quantity.Visible={txt1Quantity.Visible}");
                 }
                 else
                 {
@@ -749,32 +950,77 @@ namespace BalanzaPOSNuevo
         // -----------------------------------------------------
 
         // Constructor sin parámetros (usado si solo haces new MainScreen())
+
+        // Constructor actualizado para inyección de dependencias
         public MainScreen()
         {
             InitializeComponent();
-            File.AppendAllText("debug.log", $"[{DateTime.Now}] MainScreen_Constructor: Iniciando constructor MainScreen\n");
-            _serialPort = new SerialPort(); // Asegúrate de que se inicialice aquí
-            _serialPort.DataReceived += SerialPort_DataReceived;
+            InitializeServices();
+            InitializeUIComponents(); // Asegúrate de que esto se llama
+            _saleService = new SaleService(); // Instancia tu servicio aquí o globalmente si ya lo hiciste
+            dgvSaleItems.DataSource = _saleService.CurrentSaleItems; // Enlaza el DGV al DataTable del servicio
+
+            // ⭐ SUSCRIPCIONES A EVENTOS
+            _saleService.SaleUpdated += HandleSaleUpdated;
+            _saleService.SaleFinalized += HandleSaleFinalized;
            
-            ConfiguracionUsuario.LoadSettings();
-            PopulateSerialPorts();
-            InitializeSaleItemsDataTable();
-            InitializeDataGridViews();
-            this.SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
-            this.AutoScaleMode = AutoScaleMode.Dpi;
-            dgvUsers.DataError += dgvUsers_DataError;
-            this.Load += new System.EventHandler(this.MainScreen_Load);
-            this.FormClosing += new FormClosingEventHandler(this.MainScreen_FormClosing);
-            LoadUserData();
-            txtSearchProductCode.Text = "000000";
-            txtProductId.Text = "000000";
-            // Asegúrate de que los estados iniciales de los botones sean correctos
-            btnConnectBalanza.Enabled = true;
-            btnDisconnectBalanza.Enabled = false;
-            lblConnectionStatus.Text = "Desconectado";
-            lblConnectionStatus.ForeColor = Color.Red;
+            // Puedes cargar productos al inicio si es necesario
+            LoadProductsToDataGridView();
+
+            // Inicializar el ComboBox de métodos de pago
+            InitializePaymentMethods();
         }
 
+        // -----------------------------------------------------------------------------------
+        // Métodos de Eventos (Manejadores de Eventos del Servicio)
+        // -----------------------------------------------------------------------------------
+
+        private void HandleSaleUpdated(object sender, EventArgs e)
+        {
+            // ... (Tu lógica existente para actualizar dgvSaleItems y lblTotalSale) ...
+
+            // Habilitar el botón de Totalizar/Guardar Venta solo si hay ítems en la venta
+            btnNewSale.Enabled = _saleService.CurrentSaleItems.Rows.Count > 0;
+
+            txtTotalSale.Text = _saleService.TotalSale.ToString("C2");
+
+            // ... (otras actualizaciones de UI para primer ítem, etc.) ...
+        }
+
+        private void HandleSaleFinalized(object sender, EventArgs e)
+        {
+            // El servicio ya ha guardado y finalizado la venta.
+
+            // 1. Indicar al servicio que comience la nueva venta.
+            // Esto llama a CurrentSaleItems.Clear() y luego a OnSaleUpdated().
+            _saleService.NewSale();
+
+            // 2. Limpiar la interfaz de usuario de texto.
+            ClearSaleInterface();
+            dgvSaleItems.Refresh(); // Forzar el redibujado
+            btnNewSale.Enabled = false;
+        }
+
+        private void InitializeServices()
+        {
+            _productService = new ProductService();
+            _saleService = new SaleService();
+            _quickProductService = new QuickProductService(_productService); // Pasa ProductService
+            _scaleService = new ScaleService();
+
+            // Suscribirse a los eventos de los servicios
+            _saleService.SaleUpdated += (s, e) => UpdateSaleUI(); // Actualiza la UI de venta
+            _scaleService.WeightReceived += (s, weight) => UpdateWeightDisplay(weight); // Actualiza el display de peso
+            _scaleService.ConnectionStatusChanged += (s, status) => UpdateScaleStatusUI(status);
+            _scaleService.ErrorOccurred += (s, error) => ShowScaleError(error);
+        }
+
+        private void InitializeUIComponents()
+        {
+            // Cualquier inicialización de la UI que no requiera datos cargados
+            ConfigureSaleDataGridViewColumns(); // Configura las columnas del DGV de venta
+            // ... otras inicializaciones visuales ...
+        }
         private void PopulateComPorts()
         {
             cmbPorts.Items.Clear();
@@ -792,9 +1038,9 @@ namespace BalanzaPOSNuevo
             // cmbBaudRate.SelectedItem = ConfiguracionUsuario.BaudRate.ToString();
             // cmbParity.SelectedItem = ConfiguracionUsuario.Parity.ToString();
             // ...
-            if (!string.IsNullOrEmpty(ConfiguracionUsuario.SerialPort) && cmbPorts.Items.Contains(ConfiguracionUsuario.SerialPort))
+            if (!string.IsNullOrEmpty(ConfiguracionUsuario.ScalePortName) && cmbPorts.Items.Contains(ConfiguracionUsuario.ScalePortName))
             {
-                cmbPorts.SelectedItem = ConfiguracionUsuario.SerialPort;
+                cmbPorts.SelectedItem = ConfiguracionUsuario.ScalePortName;
             }
         }
 
@@ -811,34 +1057,11 @@ namespace BalanzaPOSNuevo
         // Puedes inicializarla con un valor por defecto.
         private void MainScreen_Load(object sender, EventArgs e)
         {
-            // Inicializar saleItemsDataTable si es nulo
-            if (saleItemsDataTable == null)
-            {
-                saleItemsDataTable = new DataTable();
-            }
-
-            // Agregar columnas solo si no existen
-            if (saleItemsDataTable.Columns.Count == 0)
-            {
-                saleItemsDataTable.Columns.Add("IdProducto", typeof(long));
-                saleItemsDataTable.Columns.Add("Código", typeof(string));
-                saleItemsDataTable.Columns.Add("Nombre", typeof(string));
-                saleItemsDataTable.Columns.Add("Cantidad", typeof(decimal));
-                saleItemsDataTable.Columns.Add("Unidad", typeof(string));
-                saleItemsDataTable.Columns.Add("PrecioUnitario", typeof(decimal));
-                saleItemsDataTable.Columns.Add("Subtotal", typeof(decimal));
-            }
-
-            InitializeDataGridViews();
-            ConfiguracionUsuario.LoadSettings();
-            SetupSerialPort();
-            LoadProducts();
-           
-           
-
-            File.AppendAllText("debug.log", $"[{DateTime.Now}] MainScreen_Load ejecutado. Columnas en saleItemsDataTable: {string.Join(", ", saleItemsDataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName))}\n");
+            LoadProductsToDataGridView();
+            AssignQuickProductsToButtons();
+            LoadScaleSettingsAndConnect();
+            UpdateSaleUI(); // Muestra el total de la venta (0.00 al inicio)
         }
-
         // -----------------------------------------------------
         // Manejador de Eventos de Carga del Formulario (MainScreen_Load)
         // -----------------------------------------------------
@@ -848,8 +1071,8 @@ namespace BalanzaPOSNuevo
             toolTip.SetToolTip(this.txtSearchProductCode, "Ingrese el código del producto o presione Enter para buscar");
             toolTip.SetToolTip(this.txt1Quantity, "Ingrese la cantidad del producto a vender");
             toolTip.SetToolTip(this.btnAddSaleItem, "Añade el producto seleccionado a la venta");
-            toolTip.SetToolTip(this.txtProductName, "Ingrese el nombre del producto");
-            toolTip.SetToolTip(this.txtProductId, "Ingrese el código único del producto");
+            toolTip.SetToolTip(this.txtProductName, "Ingrese el nombre del producto"); // Parece ser txtSaleProductName
+            toolTip.SetToolTip(this.txtProductCode, "Ingrese el código único del producto"); // Parece ser txtSearchProductCode
             toolTip.SetToolTip(this.txtDiscount, "Ingrese el descuento para la venta");
             toolTip.SetToolTip(this.cboPaymentMethod, "Seleccione el método de pago");
 
@@ -857,13 +1080,114 @@ namespace BalanzaPOSNuevo
             {
                 if (e.KeyChar == (char)Keys.Enter)
                 {
-                    btnSearchProduct_Click(s, e);
-                    e.Handled = true;
+                    // ⭐ NO LLAMAR A btnSearchProduct_Click.
+                    // En su lugar, puedes forzar la ejecución de la lógica de TextChanged si quieres
+                    // una búsqueda inmediata al presionar Enter, o llamar a btnAddSaleItem_Click
+                    // si el producto ya está en la UI.
+
+                    // Opción 1: Si txtSearchProductCode_TextChanged ya hace la búsqueda:
+                    // txtSearchProductCode_TextChanged(s, EventArgs.Empty); 
+
+                    // Opción 2: Si el producto ya está cargado y Enter es para añadirlo:
+                    if (_selectedProduct != null)
+                    {
+                        btnAddSaleItem_Click(btnAddSaleItem, EventArgs.Empty);
+                    }
+                    else
+                    {
+                        // Si no hay producto seleccionado, haz la búsqueda
+                        // Puedes llamar a un método auxiliar de búsqueda, o simplemente dejar que
+                        // txtSearchProductCode_TextChanged se encargue, ya que ya lo hace.
+                        // Para este ejemplo, haremos una llamada directa para asegurar la búsqueda
+                        PerformProductSearchAndLoadUI(txtSearchProductCode.Text.Trim());
+                    }
+
+                    e.Handled = true; // Prevenir el "ding"
+                   
+                }
+            };
+            this.txtSearchProductCode.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Enter)
+                {
+                    e.Handled = true;         // Indica que ya manejaste la pulsación de la tecla
+                    e.SuppressKeyPress = true; // ⭐ SUPRIME LA TECLA COMPLETA (evita el "ding" y otros efectos)
                 }
             };
         }
-
          
+
+
+        private void PerformProductSearchAndLoadUI(string code)
+        {
+            try
+            {
+                Product product = _saleService.GetProductByCode(code);
+                LoadProductToSaleUI(product);
+                if (product == null)
+                {
+                    MessageBox.Show($"Producto con código {code} no encontrado.", "Búsqueda", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("Error", $"Error en búsqueda por Enter: {ex.Message}");
+                MessageBox.Show($"Error al buscar producto: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // EN BalanzaPOSNuevo\BalanzaPOSNuevo\MainScreen.cs (donde estaba la llamada)
+
+        private void txtSearchProductCode_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true; // Evita el "ding" de Windows
+
+                string productCode = txtSearchProductCode.Text.Trim();
+                if (string.IsNullOrWhiteSpace(productCode))
+                {
+                    ClearSaleItemFields(); // Limpiar si el campo está vacío
+                    return;
+                }
+
+                // ⭐ Usar el servicio ProductService (NO SaleService, ya que GetProductByCode es una operación de Producto)
+                // Necesitas una instancia de ProductService en MainScreen.cs
+                // MainScreen: private ProductService _productService;
+                // MainScreen Constructor: _productService = new ProductService();
+                Product foundProduct = _productService.GetProductByCode(productCode.PadLeft(6, '0'));
+
+                LoadProductToSaleUI(foundProduct); // ⭐ Llama a tu método centralizado de carga de UI de venta
+
+                // Opcional: limpiar el campo de búsqueda después de añadir
+                // txtSearchProductCode.Clear(); 
+            }
+        }
+
+        private void txtSaleProductName_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true; // Evita el "ding" de Windows
+
+                string productName = txtSaleProductName.Text.Trim();
+                if (string.IsNullOrWhiteSpace(productName))
+                {
+                    ClearSaleItemFields(); // Limpiar si el campo está vacío
+                    return;
+                }
+
+                // ⭐ Nuevo método en ProductService para buscar por nombre (o puedes usar GetAllProducts y filtrar)
+                Product foundProduct = _productService.GetProductByName(productName);
+
+                LoadProductToSaleUI(foundProduct);
+
+                // Opcional: limpiar el campo de búsqueda después de añadir
+                // txtSaleProductName.Clear();
+            }
+        }
         private async Task<decimal> GetWeightFromScaleAsync()
         {
             try
@@ -921,9 +1245,48 @@ namespace BalanzaPOSNuevo
             }
         }
 
+        // Este método es llamado por el evento WeightReceived del ScaleService
+        private void UpdateWeightDisplay(decimal weight)
+        {
+            // Asegúrate de que esto se ejecuta en el hilo de la UI si el evento viene de un hilo secundario
+            if (txtWeightDisplay.InvokeRequired)
+            {
+                txtWeightDisplay.Invoke(new Action<decimal>(UpdateWeightDisplay), weight);
+            }
+            else
+            {
+                txtWeightDisplay.Text = weight.ToString("F3", CultureInfo.InvariantCulture); // "F3" para 3 decimales
+                txtWeightDisplay.Refresh(); // Fuerza el refresco
+            }
+        }
 
+        private void UpdateScaleStatusUI(string status)
+        {
+            if (lblStatusBalanza.InvokeRequired) // Asumiendo que tienes un Label para el estado
+            {
+                lblStatusBalanza.Invoke(new Action<string>(UpdateScaleStatusUI), status);
+            }
+            else
+            {
+                lblStatusBalanza.Text = status;
+                Logger.Log("Balanza", $"Estado de la balanza: {status}");
+            }
+        }
 
-        
+        private void ShowScaleError(string error)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action<string>(ShowScaleError), error);
+            }
+            else
+            {
+                MessageBox.Show(error, "Error de Balanza", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // Método para cargar y conectar la balanza (ejecutar en MainScreen_Load)
+      
         private decimal GetWeightFromScale()
         {
             try
@@ -991,7 +1354,7 @@ namespace BalanzaPOSNuevo
                         cmbPorts.Items.AddRange(ports);
                         if (ports.Length > 0)
                         {
-                            cmbPorts.SelectedItem = ConfiguracionUsuario.SerialPort;
+                            cmbPorts.SelectedItem = ConfiguracionUsuario.ScalePortName;
                         }
                         Logger.Log("PopulateSerialPorts", $"Puertos seriales cargados: {string.Join(", ", ports)} [2025-09-22 02:00:00 -05]");
                     }));
@@ -1002,7 +1365,7 @@ namespace BalanzaPOSNuevo
                     cmbPorts.Items.AddRange(ports);
                     if (ports.Length > 0)
                     {
-                        cmbPorts.SelectedItem = ConfiguracionUsuario.SerialPort;
+                        cmbPorts.SelectedItem = ConfiguracionUsuario.ScalePortName;
                     }
                     Logger.Log("PopulateSerialPorts", $"Puertos seriales cargados: {string.Join(", ", ports)} [2025-09-22 02:00:00 -05]");
                 }
@@ -1016,25 +1379,74 @@ namespace BalanzaPOSNuevo
 
         private void SetupSerialPort()
         {
+            // 1. CERRAR Y LIMPIAR CUALQUIER INSTANCIA ANTERIOR
+            if (_serialPort != null && _serialPort.IsOpen)
+            {
+                _serialPort.Close();
+                _serialPort.Dispose();
+                _serialPort = null; // Establecer a null para asegurar que se crea una nueva instancia
+                Logger.Log("Balanza", "Puerto serial anterior cerrado y liberado.");
+            }
+            else if (_serialPort != null) // Si no estaba abierto pero existía una instancia
+            {
+                _serialPort.Dispose();
+                _serialPort = null;
+                Logger.Log("Balanza", "Instancia de puerto serial anterior liberada.");
+            }
+
+
             try
             {
-                serialPort = new SerialPort
+                // 2. RECUPERAR CONFIGURACIÓN ACTUAL
+                string portName = ConfiguracionUsuario.ScalePortName;
+                int baudRate = ConfiguracionUsuario.ScaleBaudRate;
+                Parity parity = ConfiguracionUsuario.ScaleParity;
+                int dataBits = ConfiguracionUsuario.ScaleDataBits;
+                StopBits stopBits = ConfiguracionUsuario.ScaleStopBits;
+
+                if (string.IsNullOrEmpty(portName))
                 {
-                    PortName = ConfiguracionUsuario.SerialPort,
-                    BaudRate = ConfiguracionUsuario.BaudRate,
-                    Parity = ConfiguracionUsuario.Parity,
-                    DataBits = ConfiguracionUsuario.DataBits,
-                    StopBits = ConfiguracionUsuario.StopBits
-                };
-                serialPort.DataReceived += SerialPort_DataReceived;
-                serialPort.Open();
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Puerto serial {ConfiguracionUsuario.SerialPort} abierto correctamente.\n");
+                    throw new InvalidOperationException("Nombre de puerto serial no configurado.");
+                }
+
+                // 3. CREAR NUEVA INSTANCIA DE SerialPort
+                _serialPort = new SerialPort(portName, baudRate, parity, dataBits, stopBits);
+
+                // 4. ASIGNAR EL MANEJADOR DE EVENTOS
+                // ⭐ CRÍTICO: Aquí es donde se conecta el evento.
+                _serialPort.DataReceived += serialPort_DataReceived;
+                _serialPort.ErrorReceived += SerialPort_ErrorReceived; // También maneja errores de puerto
+
+                // 5. ABRIR EL PUERTO
+                _serialPort.Open();
+
+                Logger.Log("Balanza", $"Conectado a la balanza en {portName}");
+                UpdateBalanzaStatusUI("Conectada", Color.Green);
+
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Logger.Log("Error de Balanza", $"Acceso denegado al puerto {ConfiguracionUsuario.ScalePortName}: {ex.Message}");
+                MessageBox.Show($"Acceso denegado al puerto {ConfiguracionUsuario.ScalePortName}. Asegúrese de que no esté siendo usado por otra aplicación.", "Error de Balanza", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _serialPort = null; // Asegurar que es null si hubo fallo
+                UpdateBalanzaStatusUI("Desconectada", Color.Red);
+                throw; // Relanza la excepción para que btnConnectBalanza_Click la capture
             }
             catch (Exception ex)
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error al abrir puerto serial: {ex.Message}\n");
-                MessageBox.Show("No se pudo conectar con la balanza.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Log("Error de Balanza", $"Error al configurar/abrir puerto serial: {ex.Message}");
+                _serialPort = null; // Asegurar que es null si hubo fallo
+                UpdateBalanzaStatusUI("Desconectada", Color.Red);
+                throw; // Relanza la excepción
             }
+        }
+
+        // ⭐ Nuevo método para manejar errores del puerto serial
+        private void SerialPort_ErrorReceived(object sender, SerialErrorReceivedEventArgs e)
+        {
+            Logger.Log("Error de Balanza (Evento ErrorReceived)", $"Error: {e.EventType}");
+            // Puedes agregar lógica aquí para desconectar o intentar reconectar.
+            UpdateBalanzaStatusUI("Error", Color.OrangeRed);
         }
         // Método ficticio para obtener peso (implementar según hardware de la balanza)
 
@@ -1048,8 +1460,8 @@ namespace BalanzaPOSNuevo
                     {
                         Dock = DockStyle.Fill,
                         AutoGenerateColumns = false,
-                        AllowUserToAddRows = false, // No se añaden filas por el usuario, siempre hay 10
-                        AllowUserToDeleteRows = false // No se borran filas por el usuario
+                        AllowUserToAddRows = false,
+                        AllowUserToDeleteRows = false
                     };
                     dgvQuickProducts.Columns.Add(new DataGridViewTextBoxColumn { Name = "ButtonIndex", HeaderText = "Índice Botón", DataPropertyName = "ButtonIndex", ReadOnly = true });
 
@@ -1060,91 +1472,49 @@ namespace BalanzaPOSNuevo
                         DataPropertyName = "ProductId",
                         DisplayMember = "Name",
                         ValueMember = "Id",
-                        DataSource = GetProductsForComboBox() // Usa el método que incluye "(Ninguno)"
+                        DataSource = GetProductsForComboBoxForConfig() // Nuevo método para el combo box
                     };
                     dgvQuickProducts.Columns.Add(productColumn);
 
                     DataTable dt = new DataTable();
                     dt.Columns.Add("ButtonIndex", typeof(int));
-                    // dt.Columns.Add("ProductId", typeof(int)); // <<-- CAMBIA ESTO
-                    dt.Columns.Add("ProductId", typeof(object)); // <--- A ESTO (o typeof(int) si manejas 0 como "Ninguno")
+                    dt.Columns.Add("ProductId", typeof(object)); // <-- ¡CORREGIDO: Tipo object para permitir DBNull.Value!
 
-                    // Pre-llenar con 10 filas para los 10 botones rápidos
                     for (int i = 1; i <= 10; i++)
                     {
-                        dt.Rows.Add(i, DBNull.Value); // Inicializa con ProductId null
+                        dt.Rows.Add(i, DBNull.Value);
                     }
 
-                    using (SQLiteConnection conn = DatabaseHelper.GetConnection())
+                    // Cargar la configuración actual desde el servicio
+                    Dictionary<int, Product> currentQuickProducts = _quickProductService.GetAssignedQuickProducts();
+                    foreach (var entry in currentQuickProducts)
                     {
-                        conn.Open();
-                        string query = @"
-                    SELECT qp.ButtonIndex, qp.ProductId
-                    FROM QuickProducts qp
-                    ORDER BY qp.ButtonIndex"; // Carga lo que ya está configurado
-                        using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
+                        int buttonIndex = entry.Key;
+                        Product product = entry.Value;
+                        DataRow existingRow = dt.AsEnumerable().FirstOrDefault(r => r.Field<int>("ButtonIndex") == buttonIndex);
+                        if (existingRow != null)
                         {
-                            using (SQLiteDataReader reader = cmd.ExecuteReader())
-                            {
-                                while (reader.Read())
-                                {
-                                    int buttonIndex = reader.GetInt32(reader.GetOrdinal("ButtonIndex"));
-                                    // Encuentra la fila existente por ButtonIndex y actualízala
-                                    DataRow existingRow = dt.AsEnumerable().FirstOrDefault(r => r.Field<int>("ButtonIndex") == buttonIndex);
-                                    if (existingRow != null)
-                                    {
-                                        existingRow["ProductId"] = reader.IsDBNull(reader.GetOrdinal("ProductId")) ? DBNull.Value : (object)reader.GetInt32(reader.GetOrdinal("ProductId"));
-                                    }
-                                }
-                            }
+                            existingRow["ProductId"] = product.Id; // Asigna el ID del producto
                         }
                     }
                     dgvQuickProducts.DataSource = dt;
 
-                    // Panel para los botones al final del formulario de configuración
-                    FlowLayoutPanel bottomPanel = new FlowLayoutPanel
-                    {
-                        Dock = DockStyle.Bottom,
-                        AutoSize = true,
-                        FlowDirection = FlowDirection.RightToLeft // Alinea los botones a la derecha
-                    };
-
+                    FlowLayoutPanel bottomPanel = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
                     Button btnSave = new Button { Text = "Guardar", AutoSize = true, Margin = new Padding(5) };
                     btnSave.Click += (s, e) =>
                     {
-                        using (SQLiteConnection conn = DatabaseHelper.GetConnection())
+                        try
                         {
-                            conn.Open();
-                            using (var transaction = conn.BeginTransaction())
-                            {
-                                // 1. Limpiar todos los QuickProducts existentes
-                                string deleteQuery = "DELETE FROM QuickProducts";
-                                using (SQLiteCommand cmd = new SQLiteCommand(deleteQuery, conn, transaction))
-                                {
-                                    cmd.ExecuteNonQuery();
-                                }
-
-                                // 2. Insertar solo los QuickProducts que tienen un ProductId asignado
-                                string insertQuery = "INSERT INTO QuickProducts (ButtonIndex, ProductId) VALUES (@ButtonIndex, @ProductId)";
-                                foreach (DataRow row in dt.Rows)
-                                {
-                                    // Solo inserta si hay un ProductId válido (no DBNull.Value)
-                                    if (row["ProductId"] != DBNull.Value && row["ProductId"] != null)
-                                    {
-                                        using (SQLiteCommand cmd = new SQLiteCommand(insertQuery, conn, transaction))
-                                        {
-                                            cmd.Parameters.AddWithValue("@ButtonIndex", row.Field<int>("ButtonIndex"));
-                                            cmd.Parameters.AddWithValue("@ProductId", row.Field<int>("ProductId"));
-                                            cmd.ExecuteNonQuery();
-                                        }
-                                    }
-                                }
-                                transaction.Commit();
-                            }
+                            _quickProductService.SaveQuickProductConfiguration(dt); // Usar el servicio
+                            AssignQuickProductsToButtons(); // Recarga los botones en el formulario principal
+                            configForm.Close();
+                            MessageBox.Show("Configuración guardada exitosamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         }
-                        Logger.Log("Configuración de productos rápidos guardada", $"Botones configurados: {dt.Rows.Count}");
-                        AssignQuickProductsToButtons(); // ¡IMPORTANTE! Recarga los botones en el formulario principal
-                        configForm.Close();
+                        catch (Exception ex)
+                        {
+                            Logger.Log("Error", $"Error al guardar configuración de productos rápidos: {ex.Message}");
+                            MessageBox.Show($"Error al guardar: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
                     };
                     bottomPanel.Controls.Add(btnSave);
 
@@ -1153,7 +1523,7 @@ namespace BalanzaPOSNuevo
                     bottomPanel.Controls.Add(btnCancel);
 
                     configForm.Controls.Add(dgvQuickProducts);
-                    configForm.Controls.Add(bottomPanel); // Añade el panel con los botones al formulario
+                    configForm.Controls.Add(bottomPanel);
                     configForm.ShowDialog();
                 }
             }
@@ -1162,6 +1532,22 @@ namespace BalanzaPOSNuevo
                 Logger.Log("Error al configurar productos rápidos", $"{ex.Message}\nStackTrace: {ex.StackTrace}");
                 MessageBox.Show($"Error al configurar productos rápidos: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private DataTable GetProductsForComboBoxForConfig()
+        {
+            DataTable productsDt = new DataTable();
+            productsDt.Columns.Add("Id", typeof(object)); // Para aceptar DBNull.Value
+            productsDt.Columns.Add("Name", typeof(string));
+
+            productsDt.Rows.Add(DBNull.Value, "(Ninguno)"); // Opción para desasignar
+
+            List<Product> allActiveProducts = _productService.GetAllProducts(false); // Solo productos activos
+            foreach (var product in allActiveProducts)
+            {
+                productsDt.Rows.Add(product.Id, product.Name);
+            }
+            return productsDt;
         }
 
         // Nuevo método para poblar el ComboBox del DataGridView con opción "Ninguno"
@@ -1228,75 +1614,12 @@ namespace BalanzaPOSNuevo
             }
         }
 
-        private void InitializeSaleItemsDataTable()
-        {
-            saleItemsDataTable = new DataTable();
-            saleItemsDataTable.Columns.Add("IdProducto", typeof(int));
-            saleItemsDataTable.Columns.Add("Código", typeof(string));
-            saleItemsDataTable.Columns.Add("Nombre", typeof(string));
-            saleItemsDataTable.Columns.Add("PrecioUnitario", typeof(decimal));
-            saleItemsDataTable.Columns.Add("Cantidad", typeof(decimal));
-            saleItemsDataTable.Columns.Add("Unidad", typeof(string));
-            saleItemsDataTable.Columns.Add("Subtotal", typeof(decimal));
-            dgvSaleItems.DataSource = saleItemsDataTable;
-        }
+        
 
 
         // Este método maneja el clic de los botones btnProductQuick1 a btnProductQuick10
 
-        private void btnProductQuick_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                Button clickedButton = sender as Button;
-                if (clickedButton == null || clickedButton.Tag == null)
-                {
-                    Logger.Log("Advertencia", "Clic en botón rápido sin Tag o botón nulo.");
-                    return;
-                }
-
-                // Recupera el objeto Product completo del Tag
-                Product product = clickedButton.Tag as Product;
-
-                if (product != null)
-                {
-                    // Rellenar los campos del formulario principal
-                    txtSearchProductCode.Text = product.Code;
-                    txtSaleProductName.Text = product.Name;
-                    lblSaleProductUnit.Text = product.Unit;
-                    txtSaleProductPrice.Text = product.PricePerUnit.ToString("N" + ConfiguracionUsuario.CurrencyDecimals, CultureInfo.InvariantCulture);
-                    txtRemainingStock.Text = product.Stock.ToString("N" + ConfiguracionUsuario.WeightDecimals, CultureInfo.InvariantCulture);
-
-                    // Lógica para la cantidad inicial (similar a lo que ya tenías)
-                    string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
-                    if (decimal.TryParse(txtWeightDisplay.Text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal weight) && weight > 0)
-                    {
-                        txt1Quantity.Text = weight.ToString(weightFormat, CultureInfo.InvariantCulture);
-                    }
-                    else
-                    {
-                        txt1Quantity.Text = 1.ToString(weightFormat, CultureInfo.InvariantCulture);
-                    }
-
-                    // Llama a AddSaleItem con el objeto Product
-                    // Necesitarías un método AddSaleItem(Product product, decimal quantity)
-                    // Si UpdateSaleTable se encarga de añadirlo al dgv, simplemente llama a UpdateSaleTable()
-                    btnAddSaleItem_Click(this, EventArgs.Empty);
-
-                    Logger.Log("Info", $"Producto rápido agregado: Código={product.Code}, Nombre={product.Name}");
-                }
-                else
-                {
-                    Logger.Log("Advertencia", "El Tag del botón rápido no contiene un objeto Product válido.");
-                    MessageBox.Show("Error: El botón rápido no tiene un producto configurado correctamente.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Error", $"Error al procesar clic en producto rápido: {ex.Message}\nStackTrace: {ex.StackTrace}");
-                MessageBox.Show("Error al procesar el producto rápido.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
+        
         private void InitializeDatabase()
         {
             try
@@ -1380,51 +1703,167 @@ namespace BalanzaPOSNuevo
             }
         }
 
-        private void LoadProducts()
+
+
+        // --- Necesitas asegurarte de que este método exista y se use ---
+
+        private void LoadProductToSaleUI(Product product)
+        {
+            string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
+            string priceFormat = "N" + ConfiguracionUsuario.CurrencyDecimals;
+
+            if (product != null)
+            {
+                _selectedProduct = product;
+                currentFoundProductId = product.Id; // Asumo que estas variables son globales en MainScreen
+                currentFoundProductCode = product.Code;
+                currentFoundProductName = product.Name;
+                currentFoundProductPrice = product.PricePerUnit;
+
+                txtProductCode.Text = product.Id.ToString(); // Esto suele ser el ID del producto, no el código
+                txtSearchProductCode.Text = product.Code; // El campo de búsqueda muestra el código del producto encontrado
+                txtSaleProductName.Text = product.Name;
+                txtSaleProductPrice.Text = product.PricePerUnit.ToString(priceFormat, CultureInfo.InvariantCulture);
+                txtStock.Text = product.Stock.ToString(weightFormat, CultureInfo.InvariantCulture);
+                txtMinimumStock.Text = product.MinimumStock.ToString(weightFormat, CultureInfo.InvariantCulture);
+                cboProductUnit.Text = product.Unit;
+                txtRemainingStock.Text = product.Stock.ToString(weightFormat, CultureInfo.InvariantCulture);
+                txtRemainingStock.ForeColor = product.Stock <= product.MinimumStock ? Color.Red : Color.Black;
+                cboWeightUnit.Text = product.Unit;
+                cboWeightUnit.Enabled = false;
+
+                if (decimal.TryParse(txtWeightDisplay.Text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal weight) && weight > 0)
+                {
+                    txt1Quantity.Text = weight.ToString(weightFormat, CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    txt1Quantity.Text = 1.ToString(weightFormat, CultureInfo.InvariantCulture);
+                }
+
+                Logger.Log("Producto encontrado y cargado en UI de venta", $"Code={product.Code}, Name={product.Name}, Quantity={txt1Quantity.Text}");
+            }
+            else
+            {
+                // ⭐ Si el producto es nulo, también debes limpiar _selectedProduct
+                _selectedProduct = null;
+                Logger.Log("Búsqueda de producto", "Producto no encontrado o nulo.");
+                ClearSaleItemFields(); // ⭐ Asegúrate de que este método limpia todos los campos de venta.
+                MessageBox.Show("Producto no encontrado.", "Búsqueda", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        // ARCHIVO: MainScreen.cs
+
+        private void ClearProductDisplayFields()
+        {
+            txtSaleProductName.Text = "";
+            lblSaleProductUnit.Text = "";
+            txtSaleProductPrice.Text = "";
+            txtRemainingStock.Text = "";
+            txt1Quantity.Text = "1"; // O a "0.00" según tu lógica inicial
+                                     // ... otros campos de la sección de venta que quieres limpiar CUANDO SE DESSELECCIONA EN LA TABLA DE PRODUCTOS...
+        }
+        private void LoadProductsToDataGridView()
         {
             try
             {
-                using (var conn = DatabaseHelper.GetConnection())
+                List<Product> products = _productService.GetAllProducts(true); // Incluir inactivos si es para administración
+
+                // Convertir List<Product> a DataTable si tu dgvProducts usa DataSource = DataTable
+                DataTable dt = new DataTable();
+                if (products.Any())
                 {
-                    conn.Open();
-                    using (var cmd = new SQLiteCommand("SELECT Id, Code, Name, Unit, PricePerUnit, Stock FROM Products WHERE Active = 1", conn))
-                    {
-                        using (var adapter = new SQLiteDataAdapter(cmd))
-                        {
-                            DataTable productsTable = new DataTable();
-                            adapter.Fill(productsTable);
-                            if (dgvProducts.InvokeRequired)
-                            {
-                                dgvProducts.BeginInvoke(new Action(() =>
-                                {
-                                    dgvProducts.DataSource = null;
-                                    dgvProducts.DataSource = productsTable;
-                                    Logger.Log("LoadProducts", $"Tabla de productos cargada con {productsTable.Rows.Count} ítems [2025-09-22 02:00:00 -05]");
-                                }));
-                            }
-                            else
-                            {
-                                dgvProducts.DataSource = null;
-                                dgvProducts.DataSource = productsTable;
-                                Logger.Log("LoadProducts", $"Tabla de productos cargada con {productsTable.Rows.Count} ítems [2025-09-22 02:00:00 -05]");
-                            }
-                        }
-                    }
+                    dt = ConvertToDataTable(products); // Necesitarás un helper para esto
                 }
+                else
+                {
+                    // Si no hay productos, crea la estructura del DataTable vacío
+                    dt.Columns.Add("Id", typeof(int));
+                    dt.Columns.Add("Code", typeof(string));
+                    dt.Columns.Add("Name", typeof(string));
+                    dt.Columns.Add("PricePerUnit", typeof(decimal));
+                    dt.Columns.Add("Unit", typeof(string));
+                    dt.Columns.Add("Stock", typeof(decimal));
+                    dt.Columns.Add("MinimumStock", typeof(decimal));
+                    dt.Columns.Add("Active", typeof(bool));
+                }
+
+                dgvProducts.DataSource = dt;
+                ConfigureProductDataGridViewColumns(); // Configurar columnas después de asignar DataSource
+                Logger.Log("UI", "Productos cargados en dgvProducts.");
             }
             catch (Exception ex)
             {
-                Logger.Log("Error en LoadProducts", $"{ex.Message}\nStackTrace: {ex.StackTrace} [2025-09-22 02:00:00 -05]");
+                Logger.Log("Error", $"Error al cargar productos en dgvProducts: {ex.Message}");
                 MessageBox.Show($"Error al cargar productos: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-       
+        // ARCHIVO: MainScreen.cs
+
+        private void ConfigureProductDataGridViewColumns()
+        {
+            // Limpiar columnas existentes para evitar duplicados si se llama varias veces
+            dgvProducts.Columns.Clear();
+
+            // Añadir las columnas necesarias.
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Id", HeaderText = "ID", DataPropertyName = "Id", ReadOnly = true, Visible = false });
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Code", HeaderText = "Código", DataPropertyName = "Code", ReadOnly = true });
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Name", HeaderText = "Nombre", DataPropertyName = "Name", ReadOnly = true });
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn() { Name = "PricePerUnit", HeaderText = "Precio Unitario", DataPropertyName = "PricePerUnit", ReadOnly = true, DefaultCellStyle = new DataGridViewCellStyle { Format = "C2" } });
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Unit", HeaderText = "Unidad", DataPropertyName = "Unit", ReadOnly = true });
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Stock", HeaderText = "Stock", DataPropertyName = "Stock", ReadOnly = true });
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn() { Name = "MinimumStock", HeaderText = "Stock Mínimo", DataPropertyName = "MinimumStock", ReadOnly = true });
+            dgvProducts.Columns.Add(new DataGridViewCheckBoxColumn() { Name = "Active", HeaderText = "Activo", DataPropertyName = "Active", ReadOnly = true });
+
+            // ⭐ CRÍTICO: Añade la columna de botón aquí
+            dgvProducts.Columns.Add(new DataGridViewButtonColumn()
+            {
+                Name = "colAsignarRapido",      // Nombre para referenciarla en el evento CellContentClick
+                HeaderText = "Asignar Rápido",  // Texto del encabezado
+                Text = "Asignar",               // Texto que aparecerá en cada botón
+                UseColumnTextForButtonValue = true, // Para que el texto anterior sea el del botón
+                FlatStyle = FlatStyle.Popup     // Estilo del botón
+            });
+
+            dgvProducts.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        }
+        // Helper method para convertir List<Product> a DataTable
+        public static DataTable ConvertToDataTable<T>(IList<T> data)
+        {
+            PropertyDescriptorCollection properties = TypeDescriptor.GetProperties(typeof(T));
+            DataTable table = new DataTable();
+            foreach (PropertyDescriptor prop in properties)
+                table.Columns.Add(prop.Name, Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType);
+            foreach (T item in data)
+            {
+                DataRow row = table.NewRow();
+                foreach (PropertyDescriptor prop in properties)
+                    row[prop.Name] = prop.GetValue(item) ?? DBNull.Value;
+                table.Rows.Add(row);
+            }
+            return table;
+        }
+
+        private void ConfigureSaleDataGridViewColumns()
+        {
+            dgvSaleItems.Columns.Clear();
+            dgvSaleItems.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Code", HeaderText = "Código", DataPropertyName = "Code", ReadOnly = true });
+            dgvSaleItems.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Name", HeaderText = "Producto", DataPropertyName = "Name", ReadOnly = true });
+            dgvSaleItems.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Quantity", HeaderText = "Cantidad", DataPropertyName = "Quantity", ReadOnly = true });
+            dgvSaleItems.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Unit", HeaderText = "Unidad", DataPropertyName = "Unit", ReadOnly = true });
+            dgvSaleItems.Columns.Add(new DataGridViewTextBoxColumn() { Name = "PricePerUnit", HeaderText = "Precio Unit.", DataPropertyName = "PricePerUnit", ReadOnly = true, DefaultCellStyle = new DataGridViewCellStyle { Format = "C2" } });
+            dgvSaleItems.Columns.Add(new DataGridViewTextBoxColumn() { Name = "Subtotal", HeaderText = "Subtotal", DataPropertyName = "Subtotal", ReadOnly = true, DefaultCellStyle = new DataGridViewCellStyle { Format = "C2" } });
+            dgvSaleItems.Columns.Add(new DataGridViewTextBoxColumn() { Name = "StockRemaining", HeaderText = "Stock Rest.", DataPropertyName = "StockRemaining", ReadOnly = true }); // Columna nueva
+            dgvSaleItems.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        }
+
         private void txtSearchProduct_TextChanged(object sender, EventArgs e)
         {
             try
             {
-                string searchName = txtSearchProduct.Text.Trim();
+                string searchName = txtSaleProductName.Text.Trim();
                 if (string.IsNullOrEmpty(searchName)) return;
 
                 using (SQLiteConnection conn = DatabaseHelper.GetConnection())
@@ -1448,7 +1887,7 @@ namespace BalanzaPOSNuevo
 
                                 string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
                                 string priceFormat = "N" + ConfiguracionUsuario.CurrencyDecimals;
-                                txtProductId.Text = currentFoundProductId.ToString();
+                                txtProductCode.Text = currentFoundProductId.ToString();
                                 txtSearchProductCode.Text = currentFoundProductCode;
                                 txtSaleProductName.Text = currentFoundProductName;
                                 txtSaleProductPrice.Text = currentFoundProductPrice.ToString(priceFormat, CultureInfo.InvariantCulture);
@@ -1486,47 +1925,120 @@ namespace BalanzaPOSNuevo
                 MessageBox.Show($"Error al buscar producto: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
+        // ARCHIVO: MainScreen.cs
+        private bool _isUpdatingUI = false;
+        private void btnAddSaleItem_Click(object sender, EventArgs e)
+        {
+            // ⭐ BLINDAJE CRÍTICO: Si el método es llamado programáticamente (por ejemplo, desde un TextChanged)
+            // mientras estamos procesando una actualización de UI (como limpiar txt1Quantity.Text),
+            // la ejecución se detiene aquí para prevenir el bucle.
+            if (_isProcessingUIUpdate)
+            {
+                Logger.Log("Bucle DEBUG", "btnAddSaleItem_Click: Cancelando re-ejecución debido a _isProcessingUIUpdate.");
+                return;
+            }
+
+            // 1. VALIDACIÓN: Producto seleccionado
+            if (_selectedProduct == null)
+            {
+                MessageBox.Show("Primero busque o seleccione un producto.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            // 2. VALIDACIÓN: Cantidad
+            string quantityText = txt1Quantity.Text.Trim();
+
+            if (!decimal.TryParse(quantityText, NumberStyles.AllowDecimalPoint | NumberStyles.AllowThousands, CultureInfo.CurrentCulture, out decimal quantity) || quantity <= 0)
+            {
+                MessageBox.Show($"Cantidad inválida o cero.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            try
+            {
+                // 3. LÓGICA DE VENTA: Primera y ÚNICA adición del producto a la venta
+                _saleService.AddProductToSale(_selectedProduct, quantity);
+                UpdateSaleTable();
+
+                // 4. LOGGING: Usar un solo log para la acción manual
+                Logger.Log("Info", $"Ítem añadido/actualizado (Manual): Nombre={_selectedProduct.Name}, Cantidad={quantity}");
+                // ⭐ Eliminé el log duplicado que estaba en la línea 1974 de tu código original.
+
+                // 5. MANIPULACIÓN DE UI CON BLINDAJE
+                _isProcessingUIUpdate = true;
+
+                if (_selectedProduct.Unit == "kg")
+                {
+                    // Para productos por peso, generalmente se limpia o se pone a cero el campo
+                    // después de agregarlo a la venta, esperando un nuevo peso de la balanza.
+                    txt1Quantity.Text = "0";
+                }
+                else // Para productos por unidad (Unit, ud, etc.)
+                {
+                    // Se resetea la cantidad a 1 para la siguiente unidad
+                    txt1Quantity.Text = 1.ToString("N0", CultureInfo.CurrentCulture);
+                }
+
+                _isProcessingUIUpdate = false;
+            }
+            catch (Exception ex)
+            {
+                _isProcessingUIUpdate = false; // Asegurar que la bandera se resetee incluso en error
+                Logger.Log("Error", $"Error al añadir ítem: {ex.Message}");
+                MessageBox.Show($"Error al añadir ítem: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
         // -----------------------------------------------------
         // ⭐ MÉTODO PARA CARGAR LOS DATOS DE USUARIO CORRECTAMENTE
         // ----------------------------------------------------- 
-        private void LoadUserData()
-        {
-            string query = "SELECT Id, Username, IsAdmin, Active, Expires FROM Users";
-            using (var conn = DatabaseHelper.GetConnection())
-            {
-                try
-                {
-                    conn.Open();
-                    using (var cmd = new SQLiteCommand(query, conn))
-                    {
-                        using (var adapter = new SQLiteDataAdapter(cmd))
-                        {
-                            userDataTable.Clear();
-                            adapter.Fill(userDataTable);
-                            dgvUsers.DataSource = userDataTable;
-
-                            dgvUsers.AutoGenerateColumns = true;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Error al cargar los datos de usuario: {ex.Message}", "Error de Base de Datos", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            }
-        }
 
         private void InitializePaymentMethods()
         {
-            cboPaymentMethod.Items.Clear();
-            cboPaymentMethod.Items.AddRange(new string[] { "Efectivo", "Tarjeta", "Transferencia" });
-            cboPaymentMethod.SelectedIndex = 0; // Selecciona "Efectivo" por defecto
+            // Rellena tu cboPaymentMethod (ejemplo)
+            cboPaymentMethod.Items.Add("Efectivo");
+            cboPaymentMethod.Items.Add("Tarjeta de Crédito");
+            cboPaymentMethod.Items.Add("Transferencia");
+            cboPaymentMethod.SelectedIndex = 0; // Selecciona el primero por defecto
         }
         private bool IsWeightBased(string unit)
         {
             return unit.ToLower() == "kg" || unit.ToLower() == "gr" || unit.ToLower() == "lb";
         }
 
+        private void LoadSelectedProductDetails(Product product) // Asume que recibes un objeto Product
+        {
+            if (product != null)
+            {
+                txtProductName.Text = product.Name;
+                txtSaleProductPrice.Text = product.PricePerUnit.ToString(); // Mostrar el precio
+                txtRemainingStock.Text = product.Stock.ToString(); // Mostrar el stock
+
+                // Lógica para txt1Quantity
+                if (product.Unit == "kg" || product.Unit == "g" || product.Unit == "L") // Si es un producto pesado/líquido
+                {
+                    txt1Quantity.Text = "0.000"; // Permitir entrada decimal con 3 decimales
+                    txt1Quantity.ReadOnly = false; // Permitir al usuario cambiar la cantidad
+                }
+                else // Producto por unidad/paquete
+                {
+                    txt1Quantity.Text = "1"; // Cantidad por defecto de 1
+                    txt1Quantity.ReadOnly = false; // Permitir al usuario cambiar la cantidad (ej. comprar 2 paquetes)
+                }
+
+                // También podrías enfocar el cursor automáticamente
+                txt1Quantity.Focus();
+            }
+            else
+            {
+                // Limpiar si no hay producto seleccionado
+                txtProductName.Clear();
+                txtSaleProductPrice.Clear();
+                txtRemainingStock.Clear();
+                txt1Quantity.Text = "1"; // Reset a 1
+            }
+        }
+       
         // -----------------------------------------------------
         // Método Auxiliar para Inicializar DataGridViews (Necesario)
         // -----------------------------------------------------
@@ -1611,21 +2123,45 @@ namespace BalanzaPOSNuevo
         }
 
         // Repite este patrón para otros DataGridViews que tengas (ej. dgvSales, dgvClients)
-       
+
 
         // -----------------------------------------------------
         // Métodos Auxiliares para Cargar Datos
         // -----------------------------------------------------
 
-        private void LoadProductData()
+        private void LoadProductData(string searchTerm = "", string searchColumn = "") // Agregamos parámetros de búsqueda
         {
             try
             {
                 using (var conn = DatabaseHelper.GetConnection())
                 {
                     conn.Open();
-                    using (var cmd = new SQLiteCommand("SELECT Id, Code, Name, Unit, PricePerUnit, MinimumStock, Stock FROM Products WHERE Active = 1", conn))
+                    string query = "SELECT Id, Code, Name, Unit, PricePerUnit, MinimumStock, Stock, Active FROM Products WHERE Active = 1"; // ⭐ Ahora 'Active' está en SELECT
+
+                    // ⭐ AGREGAR LÓGICA DE BÚSQUEDA
+                    if (!string.IsNullOrWhiteSpace(searchTerm))
                     {
+                        if (searchColumn == "Code")
+                        {
+                            query += " AND Code LIKE @SearchTerm";
+                        }
+                        else if (searchColumn == "Name")
+                        {
+                            query += " AND Name LIKE @SearchTerm";
+                        }
+                        // Si searchColumn está vacío, puedes buscar en ambos o ninguno, según lo que prefieras por defecto
+                        // else { query += " AND (Code LIKE @SearchTerm OR Name LIKE @SearchTerm)"; }
+                    }
+
+                    query += " ORDER BY Name"; // Siempre ordenar para una vista consistente
+
+                    using (var cmd = new SQLiteCommand(query, conn))
+                    {
+                        if (!string.IsNullOrWhiteSpace(searchTerm))
+                        {
+                            cmd.Parameters.AddWithValue("@SearchTerm", $"%{searchTerm}%"); // Uso de % para búsqueda parcial
+                        }
+
                         using (var adapter = new SQLiteDataAdapter(cmd))
                         {
                             DataTable productsTable = new DataTable();
@@ -1712,8 +2248,8 @@ namespace BalanzaPOSNuevo
             if (balanzaSimulator != null)
             {
                 balanzaSimulator.Start();
-                lblConnectionStatus.Text = "Modo Demo";
-                lblConnectionStatus.ForeColor = Color.Orange;
+                lblStatusBalanza.Text = "Modo Demo";
+                lblStatusBalanza.ForeColor = Color.Orange;
             }
         }
 
@@ -1760,23 +2296,23 @@ namespace BalanzaPOSNuevo
             }
 
             string selectedPort = cmbPorts.SelectedItem.ToString();
-            if (serialPort != null && serialPort.IsOpen)
+            if (_serialPort != null && _serialPort.IsOpen)
             {
                 DisconnectBalanza();
             }
-            serialPort = new SerialPort(selectedPort);
+            _serialPort = new SerialPort(selectedPort);
 
             // ⭐ Cargar los parámetros desde la configuración del usuario
             try
             {
-                serialPort.BaudRate = ConfiguracionUsuario.BaudRate;
-                serialPort.Parity = ConfiguracionUsuario.Parity;
-                serialPort.DataBits = ConfiguracionUsuario.DataBits;
-                serialPort.StopBits = ConfiguracionUsuario.StopBits;
-                serialPort.Handshake = Handshake.None; // Este valor puede seguir fijo si siempre es el mismo
+                _serialPort.BaudRate = ConfiguracionUsuario.ScaleBaudRate;
+                _serialPort.Parity = ConfiguracionUsuario.ScaleParity;
+                _serialPort.DataBits = ConfiguracionUsuario.ScaleDataBits;
+                _serialPort.StopBits = ConfiguracionUsuario.ScaleStopBits;
+                _serialPort.Handshake = Handshake.None; // Este valor puede seguir fijo si siempre es el mismo
 
-                serialPort.Open();
-                serialPort.DataReceived += SerialPort_DataReceived;
+                _serialPort.Open();
+                _serialPort.DataReceived += serialPort_DataReceived;
                 // ... el resto de tu código de conexión
             }
             catch (Exception ex)
@@ -1795,12 +2331,12 @@ namespace BalanzaPOSNuevo
         // Método para desconectar de la balanza
         private void DisconnectBalanza()
         {
-            if (serialPort != null && serialPort.IsOpen)
+            if (_serialPort != null && _serialPort.IsOpen)
             {
-                serialPort.DataReceived -= SerialPort_DataReceived; // Desasociar el evento
-                serialPort.Close();
-                serialPort.Dispose();
-                serialPort = null; // Liberar la instancia
+                _serialPort.DataReceived -= serialPort_DataReceived; // Desasociar el evento
+                _serialPort.Close();
+                _serialPort.Dispose();
+                _serialPort = null; // Liberar la instancia
             }
             if (btnConnectBalanza != null) btnConnectBalanza.Enabled = true;
             if (btnDisconnectBalanza != null) btnDisconnectBalanza.Enabled = false;
@@ -1813,14 +2349,14 @@ namespace BalanzaPOSNuevo
         {
             try
             {
-                if (serialPort != null && serialPort.IsOpen)
+                if (_serialPort != null && _serialPort.IsOpen)
                 {
-                    serialPort.DataReceived -= SerialPort_DataReceived;
-                    serialPort.Close();
-                    Logger.Log("Puerto serial cerrado", $"Puerto: {ConfiguracionUsuario.SerialPort}");
+                    _serialPort.DataReceived -= serialPort_DataReceived;
+                    _serialPort.Close();
+                    Logger.Log("Puerto serial cerrado", $"Puerto: {ConfiguracionUsuario.ScalePortName}");
                 }
-                serialPort?.Dispose();
-                serialPort = null;
+                _serialPort?.Dispose();
+                _serialPort = null;
             }
             catch (Exception ex)
             {
@@ -1887,93 +2423,10 @@ namespace BalanzaPOSNuevo
 
         }
 
-        private void btnSearchProduct_Click(object sender, EventArgs e)
-        {
-            string code = txtSearchProductCode.Text.Trim().Replace("_", "");
-            code = code.PadLeft(6, '0');
-            if (string.IsNullOrEmpty(code))
-            {
-                MessageBox.Show("Por favor, ingrese un código de producto.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            using (SQLiteConnection conn = DatabaseHelper.GetConnection())
-            {
-                try
-                {
-                    conn.Open();
-                    string query = "SELECT Code, Name, PricePerUnit, Unit, Stock FROM Products WHERE Code = @Code";
-                    using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@Code", code);
-                        using (SQLiteDataReader reader = cmd.ExecuteReader())
-                        {
-                            if (reader.Read())
-                            {
-                                txtSaleProductName.Text = reader.GetString(reader.GetOrdinal("Name"));
-                                txtSaleProductPrice.Text = reader.GetDecimal(reader.GetOrdinal("PricePerUnit")).ToString("F2");
-                                lblSaleProductUnit.Text = reader.GetString(reader.GetOrdinal("Unit"));
-                                txt1Quantity.Text = "1";
-                                txtRemainingStock.Text = reader.GetDecimal(reader.GetOrdinal("Stock")).ToString("F2");
-                            }
-                            else
-                            {
-                                MessageBox.Show("Producto no encontrado.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                                txtSaleProductName.Text = "";
-                                txtSaleProductPrice.Text = "";
-                                lblSaleProductUnit.Text = "";
-                                txt1Quantity.Text = "";
-                                txtRemainingStock.Text = "";
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    using (StreamWriter writer = new StreamWriter("debug.log", true))
-                    {
-                        writer.WriteLine($"[{DateTime.Now}] Error al buscar el producto: {ex.Message}");
-                    }
-                    MessageBox.Show($"Error al buscar el producto: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally
-                {
-                    if (conn.State == ConnectionState.Open)
-                    {
-                        conn.Close();
-                    }
-                }
-            }
-        }
+        
 
         // Nuevo método para buscar el producto en la base de datos
-        private DataTable SearchProductByCode(string code)
-        {
-            DataTable dt = new DataTable();
-            using (SQLiteConnection conn = DatabaseHelper.GetConnection())
-            {
-                try
-                {
-                    conn.Open();
-                    // La columna para el código es "Code" en tu DB y "txtSaleItemIdColumn" en tu UI de gestión
-                    string query = "SELECT Id, Code, Name, \"PricePerUnit\", Unit, Active FROM Products WHERE Code = @Code LIMIT 1";
-                    using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@Code", code);
-                        using (SQLiteDataReader reader = cmd.ExecuteReader())
-                        {
-                            dt.Load(reader);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Error al buscar producto por código: {ex.Message}", "Error de Búsqueda", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return null;
-                }
-            }
-            return dt;
-        }
+       
 
         
         private bool GetProductQuantityAndUnit(out decimal quantity, out string quantityUnit)
@@ -2010,6 +2463,7 @@ namespace BalanzaPOSNuevo
 
         private void txtSearchProductCode_TextChanged(object sender, EventArgs e)
         {
+            Logger.Log("AutoVenta DEBUG", "--> txtSearchProductCode_TextChanged llamado."); // ⭐ AÑADE ESTO
             try
             {
                 string searchCode = txtSearchProductCode.Text.Trim();
@@ -2036,7 +2490,7 @@ namespace BalanzaPOSNuevo
 
                                 string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
                                 string priceFormat = "N" + ConfiguracionUsuario.CurrencyDecimals;
-                                txtProductId.Text = currentFoundProductId.ToString();
+                                txtProductCode.Text = currentFoundProductId.ToString();
                                 txtSearchProductCode.Text = currentFoundProductCode;
                                 txtSaleProductName.Text = currentFoundProductName;
                                 txtSaleProductPrice.Text = currentFoundProductPrice.ToString(priceFormat, CultureInfo.InvariantCulture);
@@ -2075,100 +2529,54 @@ namespace BalanzaPOSNuevo
             }
         }
 
-        private void btnAddSaleItem_Click(object sender, EventArgs e)
+        // ARCHIVO: MainScreen.cs
+
+        private void dgvProducts_CellContentClick(object sender, DataGridViewCellEventArgs e)
         {
-            try
+            // Verifica que no es el encabezado y que es la columna correcta.
+            // ⭐ CRÍTICO: "colAsignarRapido" debe coincidir con el nombre de tu DataGridViewButtonColumn
+            if (e.RowIndex >= 0 && e.ColumnIndex >= 0 && dgvProducts.Columns[e.ColumnIndex].Name == "colAsignarRapido")
             {
-                string productCode = txtSearchProductCode.Text.Trim().PadLeft(6, '0');
-                string quantityText = txt1Quantity.Text.Trim();
-
-                if (string.IsNullOrWhiteSpace(productCode) || string.IsNullOrWhiteSpace(quantityText))
+                // Asegúrate de que tienes un producto válido en esa fila
+                if (dgvProducts.Rows[e.RowIndex].Cells["Id"].Value != null &&
+                    int.TryParse(dgvProducts.Rows[e.RowIndex].Cells["Id"].Value.ToString(), out int productId))
                 {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnAddSaleItem_Click: Código de producto o cantidad vacíos: Código={productCode}, Cantidad={quantityText}\n");
-                    MessageBox.Show("Código de producto o cantidad vacíos.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
+                    // Ahora sí, llama al método de asignación
+                    PromptForQuickButtonAssignment(productId);
                 }
+            }
+        }
 
-                if (!decimal.TryParse(quantityText, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal quantity) || quantity <= 0)
-                {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnAddSaleItem_Click: Cantidad inválida: {quantityText}\n");
-                    MessageBox.Show($"Cantidad inválida: {quantityText}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
+        // ARCHIVO: MainScreen.cs
 
-                using (var conn = DatabaseHelper.GetConnection())
+        private void PromptForQuickButtonAssignment(int productId)
+        {
+            // ⭐ Asegúrate de que FormQuickButtonAssigner existe y tiene el constructor adecuado
+            using (FormQuickButtonAssigner assignerForm = new FormQuickButtonAssigner(productId))
+            {
+                if (assignerForm.ShowDialog() == DialogResult.OK)
                 {
-                    conn.Open();
-                    using (var cmd = new SQLiteCommand("SELECT Id, Code, Name, Unit, PricePerUnit, Stock FROM Products WHERE Code = @Code AND Active = 1", conn))
+                    int buttonNumber = assignerForm.SelectedButtonNumber;
+                    try
                     {
-                        cmd.Parameters.AddWithValue("@Code", productCode);
-                        using (var reader = cmd.ExecuteReader())
-                        {
-                            if (reader.Read())
-                            {
-                                long productId = reader.GetInt64(0);
-                                string name = reader.GetString(2);
-                                string unit = reader.GetString(3);
-                                decimal pricePerUnit = reader.GetDecimal(4);
-                                decimal stock = reader.GetDecimal(5);
-
-                                if (quantity > stock)
-                                {
-                                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnAddSaleItem_Click: Stock insuficiente para {name}. Disponible: {stock}\n");
-                                    MessageBox.Show($"Stock insuficiente para {name}. Disponible: {stock}.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                    return;
-                                }
-
-                                bool itemExists = false;
-                                foreach (DataRow row in saleItemsDataTable.Rows)
-                                {
-                                    if (row["Código"].ToString() == productCode)
-                                    {
-                                        decimal existingQuantity = Convert.ToDecimal(row["Cantidad"]);
-                                        row["Cantidad"] = existingQuantity + quantity;
-                                        row["Subtotal"] = (existingQuantity + quantity) * pricePerUnit;
-                                        itemExists = true;
-                                        break;
-                                    }
-                                }
-
-                                if (!itemExists)
-                                {
-                                    decimal subtotal = quantity * pricePerUnit;
-                                    DataRow row = saleItemsDataTable.NewRow();
-                                    row["IdProducto"] = productId;
-                                    row["Código"] = productCode;
-                                    row["Nombre"] = name;
-                                    row["PrecioUnitario"] = pricePerUnit;
-                                    row["Cantidad"] = quantity;
-                                    row["Unidad"] = unit;
-                                    row["Subtotal"] = subtotal;
-                                    saleItemsDataTable.Rows.Add(row);
-                                }
-
-                                UpdateSaleTable();
-                                txtSearchProductCode.Text = "";
-                                txt1Quantity.Text = "";
-                                txtSaleProductName.Text = "";
-                                lblSaleProductUnit.Text = "";
-                                txtSaleProductPrice.Text = "";
-                                txtRemainingStock.Text = "";
-                                File.AppendAllText("debug.log", $"[{DateTime.Now}] btnAddSaleItem_Click: Ítem añadido/actualizado: Código={productCode}, Nombre={name}, Cantidad={quantity}, Subtotal={quantity * pricePerUnit}\n");
-                            }
-                            else
-                            {
-                                File.AppendAllText("debug.log", $"[{DateTime.Now}] btnAddSaleItem_Click: Producto con código {productCode} no encontrado o no activo\n");
-                                MessageBox.Show($"Producto con código {productCode} no encontrado.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            }
-                        }
+                        _quickProductService.AssignProductToQuickButton(buttonNumber, productId);
+                        MessageBox.Show($"Producto asignado al botón rápido {buttonNumber}.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        AssignQuickProductsToButtons(); // Recarga los botones para que se vea el cambio
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log("Error", $"Error al asignar producto rápido: {ex.Message}");
+                        MessageBox.Show($"Error al asignar producto rápido: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en btnAddSaleItem_Click: {ex.Message}\nStackTrace: {ex.StackTrace}\n");
-                MessageBox.Show($"Error al añadir ítem: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+        }
+
+        // EN BalanzaPOSNuevo\BalanzaPOSNuevo\MainScreen.cs
+
+        private void btnProductQuick_Click(object sender, EventArgs e)
+        {
+
         }
         private void txtWeight_KeyPress(object sender, KeyPressEventArgs e)
         {
@@ -2227,18 +2635,21 @@ namespace BalanzaPOSNuevo
             return total;
         }
 
-        private void UpdateTotalSaleDisplay()
+        // ⭐ CORRECCIÓN: Firma del método UpdateTotalSaleDisplay
+        private void UpdateTotalSaleDisplay(decimal totalAmount) // Acepta un decimal como argumento
         {
-            decimal total = saleItemsDataTable.AsEnumerable().Sum(row => Convert.ToDecimal(row["SaleItemSubtotalColumn"]));
-            txtTotalSale.Text = $"S/. {total:F2}";
+            // Asume que tienes un Label o TextBox para mostrar el total (por ejemplo, lblTotalSale)
+            // lblTotalSale.Text = totalAmount.ToString("C2", System.Globalization.CultureInfo.CurrentCulture); 
+            // O si usas un TextBox:
+            // txtTotalSale.Text = totalAmount.ToString("C2", System.Globalization.CultureInfo.CurrentCulture);
         }
         private void btnClosePort_Click(object sender, EventArgs e)
         {
             try
             {
-                if (serialPort != null && serialPort.IsOpen)
+                if (_serialPort != null && _serialPort.IsOpen)
                 {
-                    serialPort.Close();
+                    _serialPort.Close();
                     MessageBox.Show("Puerto cerrado.", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 else
@@ -2320,120 +2731,93 @@ namespace BalanzaPOSNuevo
             }
         }
 
-        private void btnFinalizeSale_Click(object sender, EventArgs e)
+       
+        private void UpdateSaleUI()
         {
-            try
+            // Asigna el DataTable del servicio al DataGridView de ventas
+            dgvSaleItems.DataSource = _saleService.CurrentSaleItems;
+            txtTotalSale.Text = _saleService.TotalSale.ToString("C2", ConfiguracionUsuario.CurrentCulture); // Formato de moneda
+                                                                                                            // ... cualquier otra actualización de UI para la venta ...
+
+            // Si tu dgvSaleItems no tiene autogeneración de columnas, configúralas una vez
+            if (dgvSaleItems.Columns.Count == 0)
             {
-                decimal total = saleItemsDataTable.AsEnumerable()
-                    .Sum(row => row.Field<decimal>("Subtotal"));
-                decimal discount = 0; // Ajusta según la lógica de descuentos
-                string paymentMethod = "Efectivo"; // Ajusta según el método de pago
-                string username = Session.Username; // Asume que Session.Username existe
-                int cashRegisterId = 1; // Ajusta según la configuración
-                long saleId = DatabaseHelper.SaveSaleToDatabase(saleItemsDataTable, total, discount, paymentMethod, username, cashRegisterId);
-                lastSaleId = saleId;
-                var saleSummary = new SaleSummaryForm(saleItemsDataTable.Copy(), total, discount, paymentMethod);
-                saleSummary.ShowDialog();
-                saleItemsDataTable.Clear();
-                UpdateSaleTable();
-                Logger.Log("Info", $"Venta finalizada, abriendo resumen para SaleId={lastSaleId}");
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Error", $"Error al finalizar venta: {ex.Message}");
-                MessageBox.Show("Error al finalizar la venta.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ConfigureSaleDataGridViewColumns();
             }
         }
 
-        private void btnNewSale_Click(object sender, EventArgs e)
+        // EN MainScreen.cs
+
+        // ARCHIVO: MainScreen.cs
+
+        private void btnFinalizeSale_Click(object sender, EventArgs e)
         {
+            if (saleItemsDataTable.Rows.Count == 0)
+            {
+                MessageBox.Show("No hay artículos en la venta.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             try
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] btnNewSale_Click: Verificando columnas en saleItemsDataTable: {string.Join(", ", saleItemsDataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName))}\n");
+                // ⭐ Lógica de guardar la venta (ejemplo)
+                // int newSaleId = _saleService.SaveSale(saleItemsDataTable); 
 
-                if (saleItemsDataTable.Rows.Count > 0)
-                {
-                    decimal total = saleItemsDataTable.AsEnumerable()
-                        .Sum(row => row.Field<decimal>("Subtotal"));
+                // 1. Limpiar la fuente de datos de la venta
+                saleItemsDataTable.Clear();
+                Logger.Log("Venta", "Tabla de venta limpiada.");
 
-                    using (var conn = DatabaseHelper.GetConnection())
-                    {
-                        conn.Open();
-                        using (var transaction = conn.BeginTransaction())
-                        {
-                            try
-                            {
-                                long saleId;
-                                using (var cmd = new SQLiteCommand(
-                                    "INSERT INTO Sales (UserId, SaleDate, Total, PaymentMethod) VALUES (@UserId, @SaleDate, @Total, @PaymentMethod); SELECT last_insert_rowid();", conn))
-                                {
-                                    cmd.Parameters.AddWithValue("@UserId", Session.UserId); // Reemplaza loggedInUserId
-                                    cmd.Parameters.AddWithValue("@SaleDate", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-                                    cmd.Parameters.AddWithValue("@Total", total);
-                                    cmd.Parameters.AddWithValue("@PaymentMethod", cboPaymentMethod.SelectedItem?.ToString() ?? "Efectivo");
-                                    saleId = (long)cmd.ExecuteScalar();
-                                }
+                // 2. Limpiar la UI de venta y el producto activo
+                UpdateSaleTable(); // Actualiza la grilla y el total (a 0)
+                ClearProductDisplayFields(); // Limpia campos de nombre/precio y setea _selectedProduct = null
+                txtSearchProductCode.Text = "";
+                txt1Quantity.Text = "1";
 
-                                foreach (DataRow row in saleItemsDataTable.Rows)
-                                {
-                                    long productId = Convert.ToInt64(row["IdProducto"]);
-                                    decimal quantity = Convert.ToDecimal(row["Cantidad"]);
-                                    decimal pricePerUnit = Convert.ToDecimal(row["PrecioUnitario"]);
-                                    decimal subtotal = Convert.ToDecimal(row["Subtotal"]);
+                // También limpia el peso de la balanza si se usa
+                txtWeightDisplay.Text = "0.000";
 
-                                    using (var cmd = new SQLiteCommand(
-                                        "INSERT INTO SaleItems (SaleId, ProductId, Quantity, PricePerUnit, Subtotal) VALUES (@SaleId, @ProductId, @Quantity, @PricePerUnit, @Subtotal)", conn))
-                                    {
-                                        cmd.Parameters.AddWithValue("@SaleId", saleId);
-                                        cmd.Parameters.AddWithValue("@ProductId", productId);
-                                        cmd.Parameters.AddWithValue("@Quantity", quantity);
-                                        cmd.Parameters.AddWithValue("@PricePerUnit", pricePerUnit);
-                                        cmd.Parameters.AddWithValue("@Subtotal", subtotal);
-                                        cmd.ExecuteNonQuery();
-                                    }
-
-                                    using (var cmd = new SQLiteCommand(
-                                        "UPDATE Products SET Stock = Stock - @Quantity WHERE Id = @ProductId", conn))
-                                    {
-                                        cmd.Parameters.AddWithValue("@Quantity", quantity);
-                                        cmd.Parameters.AddWithValue("@ProductId", productId);
-                                        cmd.ExecuteNonQuery();
-                                    }
-
-                                    using (var cmd = new SQLiteCommand(
-                                        "INSERT INTO StockHistory (ProductId, Quantity, ChangeDate, ChangeType, UserId) VALUES (@ProductId, @Quantity, @ChangeDate, @ChangeType, @UserId)", conn))
-                                    {
-                                        cmd.Parameters.AddWithValue("@ProductId", productId);
-                                        cmd.Parameters.AddWithValue("@Quantity", -quantity);
-                                        cmd.Parameters.AddWithValue("@ChangeDate", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-                                        cmd.Parameters.AddWithValue("@ChangeType", "Venta");
-                                        cmd.Parameters.AddWithValue("@UserId", Session.UserId); // Reemplaza loggedInUserId
-                                        cmd.ExecuteNonQuery();
-                                    }
-                                }
-
-                                transaction.Commit();
-                                File.AppendAllText("debug.log", $"[{DateTime.Now}] btnNewSale_Click: Venta guardada: ID Venta={saleId}, Ítems={saleItemsDataTable.Rows.Count}, Total={total}\n");
-                            }
-                            catch (Exception ex)
-                            {
-                                transaction.Rollback();
-                                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en btnNewSale_Click: {ex.Message}\nStackTrace: {ex.StackTrace}\n");
-                                MessageBox.Show($"Error al guardar venta: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                ClearSaleInterface();
-                btnNewSale.Enabled = true;
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] btnNewSale_Click: Interfaz limpiada, btnNewSale habilitado\n");
+                MessageBox.Show("Venta finalizada con éxito.", "Venta", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en btnNewSale_Click: {ex.Message}\nStackTrace: {ex.StackTrace}\n");
-                MessageBox.Show($"Error al iniciar nueva venta: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Log("Error", $"Error al finalizar la venta: {ex.Message}");
+                MessageBox.Show($"Error al finalizar la venta: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        private void btnNewSale_Click(object sender, EventArgs e)
+        {
+            // Verificar si hay ítems para guardar
+            if (_saleService.CurrentSaleItems.Rows.Count == 0)
+            {
+                MessageBox.Show("No hay productos en el carrito de venta para totalizar y guardar.", "Advertencia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                // Obtener los datos necesarios para finalizar la venta
+                decimal discount = string.IsNullOrEmpty(txtDiscount.Text) ? 0 : Convert.ToDecimal(txtDiscount.Text.Replace(",", "."), CultureInfo.InvariantCulture);
+                string paymentMethod = cboPaymentMethod.SelectedItem?.ToString() ?? "Efectivo";
+                string username = Session.Username; // Asume que Session.Username está disponible
+                int cashRegisterId = 1; // ID de caja registradora, ajustar según tu lógica
+
+                // Llamar al SaleService para finalizar y guardar la venta
+                _saleService.FinalizeSale(discount, paymentMethod, username, cashRegisterId);
+
+                // La limpieza de la UI y la preparación para una nueva venta
+                // se manejan a través del evento SaleFinalized en HandleSaleFinalized.
+
+                MessageBox.Show("Venta totalizada y guardada con éxito.", "Venta Exitosa", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (InvalidOperationException ex) // Captura excepciones de stock o lógicas del servicio
+            {
+                Logger.Log("Advertencia", $"Error lógico al totalizar venta: {ex.Message}");
+                MessageBox.Show(ex.Message, "Error al Totalizar", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("Error", $"Error al totalizar y guardar venta: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"Error al totalizar y guardar la venta: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -2478,12 +2862,14 @@ namespace BalanzaPOSNuevo
             }
         }
 
+        // EN MainScreen.cs
+
        
         private decimal GetStableWeight()
 {
     try
     {
-        if (serialPort == null || !serialPort.IsOpen)
+        if (_serialPort == null || !_serialPort.IsOpen)
         {
             Logger.Log("GetStableWeight", "Balanza no conectada [2025-09-22 10:20:00 -05]");
             return 0;
@@ -2535,19 +2921,63 @@ namespace BalanzaPOSNuevo
             dgvProducts.DataSource = productData;
         }
 
+
         private void dgvProducts_SelectionChanged(object sender, EventArgs e)
         {
-            if (dgvProducts.SelectedRows.Count > 0)
+            if (_isQuickButtonClick) return;
+            // Solo si hay una fila seleccionada
+            if (dgvProducts.CurrentRow != null && dgvProducts.CurrentRow.Cells["Id"].Value != null)
             {
-                var row = dgvProducts.SelectedRows[0];
-                txtProductId.Text = row.Cells["Code"].Value?.ToString();
-                cboProductUnit.Text = row.Cells["Unit"].Value?.ToString();
-                txtStock.Text = row.Cells["Stock"].Value?.ToString();
-                txtProductPrice.Text = row.Cells["PricePerUnit"].Value?.ToString();
-                txtMinimumStock.Text = row.Cells["MinimumStock"].Value?.ToString();
-                chkProductActive.Checked = Convert.ToBoolean(row.Cells["Active"].Value);
-                txtProductName.Text = row.Cells["Name"].Value?.ToString();
-                Logger.Log("Info", $"Producto seleccionado: Código={txtProductId.Text}, Nombre={txtProductName.Text}");
+                try
+                {
+                    // 1. Obtener el ID de la fila seleccionada
+                    if (!int.TryParse(dgvProducts.CurrentRow.Cells["Id"].Value.ToString(), out int productId))
+                    {
+                        // Si falla el parseo, salimos
+                        return;
+                    }
+
+                    // 2. Usar el servicio para obtener los datos completos del producto
+                    // ⭐ Esta es la clave para evitar errores de conversión y formatos de DataGridView.
+                    Product product = _productService.GetProductById(productId);
+
+                    if (product != null)
+                    {
+                        _selectedProduct = product; // ⭐ CRÍTICO: Establece la variable
+                        // 3. Aplicar formato basado en la Configuración del Usuario (CurrentCulture para UI)
+                        string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals;
+                        string priceFormat = "N" + ConfiguracionUsuario.CurrencyDecimals;
+
+                        // 4. Cargar los campos de edición
+                        txtProductCode.Tag = product.Id; // Usar el Tag para almacenar el ID
+                        txtProductCode.Text = product.Code;
+                        txtProductName.Text = product.Name;
+
+                        // ⭐ Formatear para la UI con la cultura actual (coma o punto)
+                        txtProductPrice.Text = product.PricePerUnit.ToString(priceFormat, CultureInfo.CurrentCulture);
+                        txtStock.Text = product.Stock.ToString(weightFormat, CultureInfo.CurrentCulture);
+                        txtMinimumStock.Text = product.MinimumStock.ToString(weightFormat, CultureInfo.CurrentCulture);
+
+                        cboProductUnit.Text = product.Unit;
+                        chkProductActive.Checked = product.Active;
+
+                        Logger.Log("UI", $"Detalles del producto (ID: {product.Id}) cargados en los campos de edición.");
+                    }
+                    else
+                    {
+                        ClearProductDisplayFields(); // <--- LLAMA A UN MÉTODO QUE SÓLO LIMPIA LOS CAMPOS DE EDICIÓN
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("Error", $"Error al cargar detalles de producto de dgvProducts: {ex.Message}");
+                    // Este log debería disminuir drásticamente con esta nueva lógica.
+                }
+            }
+            else
+            {
+                // Limpiar los campos si no hay fila seleccionada
+                ClearProductControls();
             }
         }
         private void tabPageProducts_Click(object sender, EventArgs e)
@@ -2623,7 +3053,7 @@ namespace BalanzaPOSNuevo
         }
         private void txtProductId_Enter(object sender, EventArgs e)
         {
-            txtProductId.SelectionStart = txtProductId.Text.Length;
+            txtProductCode.SelectionStart = txtProductCode.Text.Length;
         }
 
         private void UpdateProductDecimals()
@@ -2657,16 +3087,15 @@ namespace BalanzaPOSNuevo
 
         private void ClearProductControls()
         {
-            txtProductId.Text = string.Empty;
+            txtProductCode.Tag = 0;
+            txtProductCode.Text = string.Empty;
             txtProductName.Text = string.Empty;
-            txtProductPrice.Text = 0.0M.ToString($"N{ConfiguracionUsuario.CurrencyDecimals}", CultureInfo.InvariantCulture);
-            txtStock.Text = 0.0M.ToString($"N{ConfiguracionUsuario.WeightDecimals}", CultureInfo.InvariantCulture);
-            txtMinimumStock.Text = 0.0M.ToString($"N{ConfiguracionUsuario.WeightDecimals}", CultureInfo.InvariantCulture);
+            txtProductPrice.Text = "0,00"; // O el formato inicial que uses
+            txtStock.Text = "0,00";
+            txtMinimumStock.Text = "0,00";
             cboProductUnit.SelectedIndex = -1;
             chkProductActive.Checked = true;
-            selectedSaleItemIdColumn = -1;
         }
-
         // ⭐ CLAVE 3: Debes añadir este método auxiliar en alguna parte de tu clase
         private decimal GetProductStock(int productId, SQLiteConnection conn, SQLiteTransaction transaction)
         {
@@ -2698,9 +3127,14 @@ namespace BalanzaPOSNuevo
 
         private void btnAddProduct_Click(object sender, EventArgs e)
         {
+            // ⭐ DECLARA LAS VARIABLES AQUÍ (AL INICIO DEL MÉTODO)
+            decimal pricePerUnit = 0m; // Inicializa con un valor por defecto
+            decimal stock = 0m;        // Inicializa con un valor por defecto
+            decimal minimumStock = 0m; // Inicializa con un valor por defecto
+
             try
             {
-                string productCode = txtProductId.Text.Trim();
+                string productCode = txtProductCode.Text.Trim();
                 string productName = txtProductName.Text.Trim();
                 string priceText = txtProductPrice.Text.Trim();
                 string unit = cboProductUnit.Text.Trim();
@@ -2715,21 +3149,22 @@ namespace BalanzaPOSNuevo
                     return;
                 }
 
-                if (!decimal.TryParse(priceText.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal pricePerUnit) || pricePerUnit < 0)
+                // ⭐ ASIGNA EL VALOR A LAS VARIABLES YA DECLARADAS
+                if (!decimal.TryParse(priceText.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out pricePerUnit) || pricePerUnit < 0)
                 {
                     Logger.Log("Error al agregar producto", "El precio debe ser un número válido");
                     MessageBox.Show("El precio debe ser un número válido.", "Error de Validación", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
-                if (!decimal.TryParse(stockText.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal stock) || stock < 0)
+                if (!decimal.TryParse(stockText.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out stock) || stock < 0)
                 {
                     Logger.Log("Error al agregar producto", "El stock debe ser un número válido");
                     MessageBox.Show("El stock debe ser un número válido.", "Error de Validación", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
-                if (!decimal.TryParse(minimumStockText.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal minimumStock) || minimumStock < 0)
+                if (!decimal.TryParse(minimumStockText.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out minimumStock) || minimumStock < 0)
                 {
                     Logger.Log("Error al agregar producto", "El stock mínimo debe ser un número válido");
                     MessageBox.Show("El stock mínimo debe ser un número válido.", "Error de Validación", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -2740,6 +3175,8 @@ namespace BalanzaPOSNuevo
                 using (SQLiteConnection conn = DatabaseHelper.GetConnection())
                 {
                     conn.Open();
+
+                    // 1. Verificar si el código ya existe (Este código es correcto)
                     string query = "SELECT COUNT(*) FROM Products WHERE Code = @Code";
                     using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
                     {
@@ -2753,34 +3190,30 @@ namespace BalanzaPOSNuevo
                         }
                     }
 
-                    // Buscar el primer Id disponible
-                    query = "SELECT MIN(t1.Id + 1) FROM Products t1 LEFT JOIN Products t2 ON t1.Id + 1 = t2.Id WHERE t2.Id IS NULL";
-                    int newId;
-                    using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
-                    {
-                        object result = cmd.ExecuteScalar();
-                        newId = result == DBNull.Value ? 1 : Convert.ToInt32(result);
-                    }
-
+                    // ⭐ Las variables ya existen aquí y pueden ser utilizadas
                     pricePerUnit = Math.Round(pricePerUnit, ConfiguracionUsuario.CurrencyDecimals);
                     stock = Math.Round(stock, ConfiguracionUsuario.WeightDecimals);
                     minimumStock = Math.Round(minimumStock, ConfiguracionUsuario.WeightDecimals);
 
                     query = @"
-                INSERT INTO Products (Id, Code, Name, PricePerUnit, Unit, Stock, MinimumStock, Active)
-                VALUES (@Id, @Code, @Name, @PricePerUnit, @Unit, @Stock, @MinimumStock, @Active)";
+                INSERT INTO Products (Code, Name, PricePerUnit, Unit, Stock, MinimumStock, Active)
+                VALUES (@Code, @Name, @PricePerUnit, @Unit, @Stock, @MinimumStock, @Active)";
+
                     using (SQLiteCommand cmd = new SQLiteCommand(query, conn))
                     {
-                        cmd.Parameters.AddWithValue("@Id", newId);
                         cmd.Parameters.AddWithValue("@Code", productCode);
                         cmd.Parameters.AddWithValue("@Name", productName);
-                        cmd.Parameters.AddWithValue("@PricePerUnit", pricePerUnit);
+                        cmd.Parameters.AddWithValue("@PricePerUnit", pricePerUnit); // ⭐ Ahora funciona
                         cmd.Parameters.AddWithValue("@Unit", unit);
-                        cmd.Parameters.AddWithValue("@Stock", stock);
-                        cmd.Parameters.AddWithValue("@MinimumStock", minimumStock);
+                        cmd.Parameters.AddWithValue("@Stock", stock);               // ⭐ Ahora funciona
+                        cmd.Parameters.AddWithValue("@MinimumStock", minimumStock); // ⭐ Ahora funciona
                         cmd.Parameters.AddWithValue("@Active", isActive ? 1 : 0);
+
                         int rowsAffected = cmd.ExecuteNonQuery();
-                        Logger.Log("Producto agregado", $"Filas afectadas: {rowsAffected}, Id={newId}, Code={productCode}");
+
+                        long lastInsertId = conn.LastInsertRowId;
+
+                        Logger.Log("Producto agregado", $"Filas afectadas: {rowsAffected}, Id generado={lastInsertId}, Code={productCode}");
                     }
                 }
 
@@ -2796,78 +3229,84 @@ namespace BalanzaPOSNuevo
             }
         }
 
+        // ARCHIVO: MainScreen.cs
+
         private void btnUpdateProduct_Click(object sender, EventArgs e)
         {
             try
             {
                 if (dgvProducts.SelectedRows.Count == 0)
                 {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnUpdateProduct_Click: No hay producto seleccionado\n");
                     MessageBox.Show("Por favor, seleccione un producto para actualizar.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
+                // Leer el ID de la fila seleccionada
                 DataGridViewRow row = dgvProducts.SelectedRows[0];
                 if (row.Cells["Id"].Value == null)
                 {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnUpdateProduct_Click: ID de producto no válido o no seleccionado\n");
                     MessageBox.Show("ID de producto no válido o no seleccionado.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
-                long productId = Convert.ToInt64(row.Cells["Id"].Value);
-                string code = txtProductId.Text.Trim().PadLeft(6, '0'); // Reemplaza txtProductCode
+                // ⭐ Usamos CurrentCulture para leer el input del usuario (si usa coma o punto según su sistema)
+                if (!long.TryParse(row.Cells["Id"].Value.ToString(), out long productId))
+                {
+                    MessageBox.Show("Error al obtener ID del producto.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                string code = txtProductCode.Text.Trim().PadLeft(6, '0');
                 string name = txtProductName.Text.Trim();
-                string unit = cboProductUnit.SelectedItem?.ToString().Trim() ?? ""; // Reemplaza txtProductUnit
-                if (string.IsNullOrWhiteSpace(unit))
+                string unit = cboProductUnit.SelectedItem?.ToString().Trim() ?? "";
+
+                // Validación y parseo de decimales desde los TextBoxes de la UI
+                if (!decimal.TryParse(txtProductPrice.Text, NumberStyles.Currency | NumberStyles.Float, CultureInfo.CurrentCulture, out decimal pricePerUnit) || pricePerUnit <= 0)
                 {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnUpdateProduct_Click: Unidad no seleccionada\n");
-                    MessageBox.Show("Por favor, seleccione una unidad válida.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show("Por favor, ingrese un precio válido (ej: 12,50).", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
-                if (!decimal.TryParse(txtProductPrice.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal pricePerUnit) || pricePerUnit <= 0)
+                if (!decimal.TryParse(txtStock.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out decimal stock) || stock < 0)
                 {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnUpdateProduct_Click: Precio inválido: {txtProductPrice.Text}\n");
-                    MessageBox.Show("Por favor, ingrese un precio válido.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-                if (!decimal.TryParse(txtStock.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal stock) || stock < 0) // Reemplaza txtProductStock
-                {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnUpdateProduct_Click: Stock inválido: {txtStock.Text}\n");
                     MessageBox.Show("Por favor, ingrese un stock válido.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
-
-                using (var conn = DatabaseHelper.GetConnection())
+                if (!decimal.TryParse(txtMinimumStock.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out decimal minimumStock) || minimumStock < 0)
                 {
-                    conn.Open();
-                    using (var cmd = new SQLiteCommand(
-                        "UPDATE Products SET Code = @Code, Name = @Name, Unit = @Unit, PricePerUnit = @PricePerUnit, Stock = @Stock WHERE Id = @Id", conn))
-                    {
-                        cmd.Parameters.AddWithValue("@Id", productId);
-                        cmd.Parameters.AddWithValue("@Code", code);
-                        cmd.Parameters.AddWithValue("@Name", name);
-                        cmd.Parameters.AddWithValue("@Unit", unit);
-                        cmd.Parameters.AddWithValue("@PricePerUnit", pricePerUnit);
-                        cmd.Parameters.AddWithValue("@Stock", stock);
-                        int rowsAffected = cmd.ExecuteNonQuery();
-
-                        File.AppendAllText("debug.log", $"[{DateTime.Now}] btnUpdateProduct_Click: Producto actualizado: ID={productId}, Código={code}, Nombre={name}, Filas afectadas={rowsAffected}\n");
-                        MessageBox.Show("Producto actualizado correctamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
+                    MessageBox.Show("Por favor, ingrese un stock mínimo válido.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
                 }
 
-                LoadProducts();
+                // Crear objeto Product con los nuevos valores
+                Product productToUpdate = new Product
+                {
+                    Id = (int)productId,
+                    Code = code,
+                    Name = name,
+                    Unit = unit,
+                    PricePerUnit = pricePerUnit,
+                    Stock = stock,
+                    MinimumStock = minimumStock,
+                    Active = chkProductActive.Checked // Leer del CheckBox
+                };
+
+                // Actualizar usando el ProductService
+                _productService.UpdateProduct(productToUpdate);
+
+                MessageBox.Show("Producto actualizado correctamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                // Recargar el DataGridView para ver los cambios
+                LoadProductData();
             }
             catch (Exception ex)
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en btnUpdateProduct_Click: {ex.Message}\nStackTrace: {ex.StackTrace}\n");
+                Logger.Log("Error en btnUpdateProduct_Click", ex.Message);
                 MessageBox.Show($"Error al actualizar producto: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         private void ClearProductFields()
         {
-            txtProductId.Text = string.Empty;
+            txtProductCode.Text = string.Empty;
             txtSearchProductCode.Text = string.Empty;
             txtProductName.Text = string.Empty;
             txtProductPrice.Text = string.Empty;
@@ -2944,26 +3383,34 @@ namespace BalanzaPOSNuevo
                 Logger.Log("Error en UpdateSaleTotal", $"{ex.Message}\nStackTrace: {ex.StackTrace} [2025-09-21 20:02:00 -05]");
             }
         }
+
+        // EN: MainScreen.cs (dentro de ClearSaleItemFields)
+
         private void ClearSaleItemFields()
         {
-            try
-            {
-                txtSearchProductCode.Clear();
-                txt1Quantity.Clear();
-                txtSaleProductName.Text = string.Empty;
-                lblSaleProductUnit.Text = string.Empty;
-                txtSaleProductPrice.Clear();
-                txtRemainingStock.Clear();
-                txtDiscount?.Clear();
-                cboPaymentMethod.SelectedIndex = -1;
-                txtTotalSale.Text = $"Total: {ConfiguracionUsuario.CurrencySymbol} 0.00";
-                Logger.Log("ClearSaleItemFields", "Campos de venta limpiados [2025-09-21 22:03:00 -05]");
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Error en ClearSaleItemFields", $"{ex.Message}\nStackTrace: {ex.StackTrace} [2025-09-21 22:03:00 -05]");
-            }
-         }
+            // ⭐ Asegúrate de limpiar el producto seleccionado
+            _selectedProduct = null;
+
+            txtProductCode.Text = string.Empty;
+            txtSearchProductCode.Text = string.Empty;
+            txtSaleProductName.Text = string.Empty;
+            txtSaleProductPrice.Text = "0.00";
+            txtStock.Text = "0.00";
+            txtMinimumStock.Text = "0.00";
+            cboProductUnit.Text = string.Empty;
+            txtRemainingStock.Text = "0.00";
+            txtRemainingStock.ForeColor = Color.Black;
+            txt1Quantity.Text = "0.00";
+            cboWeightUnit.Text = string.Empty;
+            cboWeightUnit.Enabled = true; // Habilitar si se limpia el producto
+            lblSaleProductUnit.Text = string.Empty; // Asegúrate de limpiar la unidad
+
+            // También limpiar las variables globales si las usas
+            currentFoundProductId = 0;
+            currentFoundProductCode = string.Empty;
+            currentFoundProductName = string.Empty;
+            currentFoundProductPrice = 0m;
+        }
         private void txtWeightDisplay_KeyPress(object sender, KeyPressEventArgs e)
         {
             if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar) && e.KeyChar != '.' && e.KeyChar != ',')
@@ -3039,52 +3486,7 @@ namespace BalanzaPOSNuevo
             }
             return details;
         }
-        private void dgvProducts_CellClick(object sender, DataGridViewCellEventArgs e)
-        {
-            if (e.RowIndex >= 0)
-            {
-                DataGridViewRow row = dgvProducts.Rows[e.RowIndex];
-
-                // Verificar que la columna Id exista
-                if (!dgvProducts.Columns.Contains("Id"))
-                {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] Error: La columna 'Id' no existe en dgvProducts\n");
-                    MessageBox.Show("Error: La columna 'Id' no está definida en la tabla de productos.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                txtProductId.Tag = row.Cells["Id"].Value != null ? Convert.ToInt32(row.Cells["Id"].Value) : 0;
-                txtProductId.Text = row.Cells["Code"].Value?.ToString() ?? string.Empty;
-                txtProductName.Text = row.Cells["Name"].Value?.ToString() ?? string.Empty;
-                txtProductPrice.Text = row.Cells["PricePerUnit"].Value != null && decimal.TryParse(row.Cells["PricePerUnit"].Value.ToString(), out decimal price)
-                    ? price.ToString("N2")
-                    : "0,00";
-                txtStock.Text = row.Cells["Stock"].Value != null && decimal.TryParse(row.Cells["Stock"].Value.ToString(), out decimal stock)
-                    ? stock.ToString("N2")
-                    : "0,00";
-                txtMinimumStock.Text = row.Cells["MinimumStock"].Value != null && decimal.TryParse(row.Cells["MinimumStock"].Value.ToString(), out decimal minimumStock)
-                    ? minimumStock.ToString("N2")
-                    : "0,00";
-                cboProductUnit.Text = row.Cells["Unit"].Value?.ToString() ?? string.Empty;
-
-                if (row.Cells["Active"].Value != null)
-                {
-                    var activeValue = row.Cells["Active"].Value;
-                    if (activeValue is bool)
-                        chkProductActive.Checked = (bool)activeValue;
-                    else if (activeValue is int)
-                        chkProductActive.Checked = (int)activeValue != 0;
-                    else if (activeValue is string)
-                        chkProductActive.Checked = activeValue.ToString() == "1" || activeValue.ToString().Equals("true", StringComparison.OrdinalIgnoreCase);
-                    else
-                        chkProductActive.Checked = false;
-                }
-                else
-                {
-                    chkProductActive.Checked = true;
-                }
-            }
-        }
+       
 
         // --- MANEJADORES DE EVENTOS PARA USUARIOS (vacíos por ahora) ---
         private void chkUserExpires_CheckedChanged(object sender, EventArgs e)
@@ -3261,7 +3663,7 @@ namespace BalanzaPOSNuevo
       
         private void HighlightEmptyFields()
         {
-            txtProductId.BackColor = string.IsNullOrWhiteSpace(txtProductId.Text) ? Color.FromArgb(255, 204, 204) : Color.White;
+            txtProductCode.BackColor = string.IsNullOrWhiteSpace(txtProductCode.Text) ? Color.FromArgb(255, 204, 204) : Color.White;
             txtProductName.BackColor = string.IsNullOrWhiteSpace(txtProductName.Text) ? Color.FromArgb(255, 204, 204) : Color.White;
             txtProductPrice.BackColor = string.IsNullOrWhiteSpace(txtProductPrice.Text) ? Color.FromArgb(255, 204, 204) : Color.White;
             cboProductUnit.BackColor = cboProductUnit.SelectedItem == null ? Color.FromArgb(255, 204, 204) : Color.White;
@@ -3308,15 +3710,15 @@ namespace BalanzaPOSNuevo
 
                 // Guardar configuraciones
                 ConfiguracionUsuario.SaveSettings(
-                    decimalesPeso,
-                    decimalesPrecio,
-                    currencySymbol,
-                    baudRate,
-                    serialPort,
-                    parity,
-                    dataBits,
-                    stopBits
-                );
+                   decimalesPeso,
+                   decimalesPrecio,
+                   currencySymbol,
+                   serialPort, // Argumento 4: string (scalePortName)
+                   baudRate, // Argumento 5: int (scaleBaudRate)
+                   parity,
+                   dataBits,
+                   stopBits
+                   );
 
                 File.AppendAllText("debug.log", $"[{DateTime.Now}] Configuración guardada: Peso={decimalesPeso}, Precio={decimalesPrecio}, Moneda={currencySymbol}, Puerto={serialPort}, BaudRate={baudRate}\n");
                 MessageBox.Show("Configuración guardada exitosamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -3497,41 +3899,40 @@ namespace BalanzaPOSNuevo
             }
         }
 
+        // ARCHIVO: MainScreen.cs
+
         private void btnDisconnectBalanza_Click(object sender, EventArgs e)
         {
             try
             {
-                if (_serialPort != null)
+                if (_serialPort != null && _serialPort.IsOpen)
                 {
-                    if (_serialPort.IsOpen)
-                    {
-                        _serialPort.Close();
-                        Logger.Log("Puerto serial cerrado", $"Puerto: {_serialPort.PortName}");
-                    }
-                    _serialPort.Dispose(); // Liberar recursos
-                    _serialPort = null;    // Anular la referencia
-                    Logger.Log("Puerto serial liberado", "Balanza desconectada");
+                    _serialPort.Close();
+                    _serialPort.Dispose();
+                    _serialPort = null; // ⭐ CRÍTICO: Liberar la instancia
+                    Logger.Log("Balanza", $"Balanza desconectada del puerto {ConfiguracionUsuario.ScalePortName}.");
+                    MessageBox.Show("Balanza desconectada correctamente.", "Desconexión", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    Logger.Log("Balanza", "Intento de desconexión pero el puerto no estaba abierto.");
+                    MessageBox.Show("La balanza ya estaba desconectada.", "Advertencia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
 
-                lblConnectionStatus.Text = "Desconectado";
-                lblConnectionStatus.ForeColor = Color.Red;
+                // ⭐ Detener el temporizador del heartbeat al desconectar
+                if (balanzaHeartbeatTimer != null && balanzaHeartbeatTimer.Enabled)
+                {
+                    balanzaHeartbeatTimer.Stop();
+                    Logger.Log("Balanza", "Temporizador de heartbeat detenido por desconexión manual.");
+                }
+
+                UpdateBalanzaStatusUI("Desconectada", Color.Red);
                 btnConnectBalanza.Enabled = true;
                 btnDisconnectBalanza.Enabled = false;
-                txtWeightDisplay.Text = string.Empty;
-                txtWeightDisplay.Refresh(); // Esto está bien en Windows Forms
-
-                // Detener temporizador (si existe y se usa para el peso)
-                if (weightUpdateTimer != null)
-                {
-                    weightUpdateTimer.Stop();
-                    Logger.Log("Temporizador de peso detenido", "Balanza desconectada");
-                }
-
-                MessageBox.Show("Balanza desconectada exitosamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                Logger.Log("Error al desconectar balanza", $"{ex.Message}\nStackTrace: {ex.StackTrace}");
+                Logger.Log("Error en btnDisconnectBalanza_Click", ex.Message);
                 MessageBox.Show($"Error al desconectar la balanza: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -3562,8 +3963,8 @@ namespace BalanzaPOSNuevo
                 balanzaSimulator.Start();
                 btnConnectBalanza.Enabled = false;
                 btnDisconnectBalanza.Enabled = false;
-                lblConnectionStatus.Text = "Modo Demo Activo";
-                lblConnectionStatus.ForeColor = Color.Green;
+                lblStatusBalanza.Text = "Modo Demo Activo";
+                lblStatusBalanza.ForeColor = Color.Green;
             }
             else
             {
@@ -3571,9 +3972,9 @@ namespace BalanzaPOSNuevo
                 balanzaSimulator?.Stop();
                 balanzaSimulator = null;
                 btnConnectBalanza.Enabled = true;
-                btnDisconnectBalanza.Enabled = serialPort != null && serialPort.IsOpen;
-                lblConnectionStatus.Text = serialPort != null && serialPort.IsOpen ? "Conectado" : "Desconectado";
-                lblConnectionStatus.ForeColor = serialPort != null && serialPort.IsOpen ? Color.Green : Color.Red;
+                btnDisconnectBalanza.Enabled = _serialPort != null && _serialPort.IsOpen;
+                lblStatusBalanza.Text = _serialPort != null && _serialPort.IsOpen ? "Conectado" : "Desconectado";
+                lblStatusBalanza.ForeColor = _serialPort != null && _serialPort.IsOpen ? Color.Green : Color.Red;
             }
         }
 
@@ -3603,45 +4004,18 @@ namespace BalanzaPOSNuevo
            // btnNewSale.Enabled = false;
 
             // Refresca la lista de productos principal después de la venta
-            LoadProductData();
+           // LoadProductData();
         }
 
         // En tu formulario MainScreen.cs
 
-        private void LoadProductDetailsByCode(string productCode)
-        {
-            decimal stockRestante = 0;
-            DataTable productData = SearchProductByCode(productCode);
-            if (productData != null && productData.Rows.Count > 0)
-            {
-                DataRow productRow = productData.Rows[0];
-                decimal stockInicial = DatabaseHelper.ObtenerStockActual(currentFoundProductId);
-                decimal cantidadEnCarrito = 0;
-                foreach (DataRow row in saleItemsDataTable.Rows)
-                {
-                    if (Convert.ToInt64(row["IdProducto"]) == currentFoundProductId)
-                    {
-                        cantidadEnCarrito += Convert.ToDecimal(row["Cantidad"]);
-                    }
-                }
-                stockRestante = stockInicial - cantidadEnCarrito;
-                string formato = "N" + ConfiguracionUsuario.WeightDecimals.ToString();
-                txtRemainingStock.Text = stockRestante.ToString(formato);
-            }
-            else
-            {
-                ClearProductDetails();
-            }
-            txtRemainingStock.ForeColor = (stockRestante <= DatabaseHelper.ObtenerStockMinimo(currentFoundProductId)) ? Color.Red : Color.Black;
-        }
-
+        
         // **Nota:** No modifiques LoadUserData, ya que es para usuarios, no para productos.
         private void txtSearchProductCode_Leave(object sender, EventArgs e)
         {
             if (!string.IsNullOrEmpty(txtSearchProductCode.Text))
             {
-                int code;
-                if (int.TryParse(txtSearchProductCode.Text, out code))
+                if (int.TryParse(txtSearchProductCode.Text, out int code))
                 {
                     txtSearchProductCode.Text = code.ToString("D6");
                 }
@@ -3650,7 +4024,12 @@ namespace BalanzaPOSNuevo
                     MessageBox.Show("Por favor, introduce un código numérico válido.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     txtSearchProductCode.Clear();
                     txtSearchProductCode.Focus();
+                    ClearProductDisplayFields(); // Limpiar UI si el código es inválido
                 }
+            }
+            else
+            {
+                ClearProductDisplayFields(); // Limpiar UI si el campo queda vacío al salir
             }
         }
 
@@ -4055,7 +4434,7 @@ namespace BalanzaPOSNuevo
         private void txtProductId_Click(object sender, EventArgs e)
         {
             // Selecciona todo el texto al entrar en el control
-            txtProductId.SelectAll();
+            txtProductCode.SelectAll();
         }
 
         private void txtProductPrice1_KeyPress(object sender, KeyPressEventArgs e)
@@ -4068,48 +4447,58 @@ namespace BalanzaPOSNuevo
 
         }
 
-
-
         private void numericUpDownDecimalesPrecio_ValueChanged(object sender, EventArgs e)
         {
             try
             {
+                // Ajusta este nombre, ya que estás modificando currencyDecimals
                 int newCurrencyDecimals = (int)numericUpDownDecimalesPrecio.Value;
+
                 ConfiguracionUsuario.SaveSettings(
-                    weightDecimals: ConfiguracionUsuario.WeightDecimals,
-                    currencyDecimals: newCurrencyDecimals,
+                    weightDecimals: ConfiguracionUsuario.WeightDecimals, // Asegúrate de que este no se cambie si solo editas precio
+                    currencyDecimals: newCurrencyDecimals, // ⭐ Nuevo valor de decimales de moneda
                     currencySymbol: ConfiguracionUsuario.CurrencySymbol,
-                    baudRate: ConfiguracionUsuario.BaudRate,
-                    serialPort: ConfiguracionUsuario.SerialPort,
-                    parity: ConfiguracionUsuario.Parity,
-                    dataBits: ConfiguracionUsuario.DataBits,
-                    stopBits: ConfiguracionUsuario.StopBits
+                    scalePortName: ConfiguracionUsuario.ScalePortName,
+                    scaleBaudRate: ConfiguracionUsuario.ScaleBaudRate,
+                    scaleParity: ConfiguracionUsuario.ScaleParity,
+                    scaleDataBits: ConfiguracionUsuario.ScaleDataBits,
+                    scaleStopBits: ConfiguracionUsuario.ScaleStopBits
                 );
 
-                if (txtProductPrice != null && decimal.TryParse(txtProductPrice.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal price))
+                // ⭐ NO uses InvariantCulture para TOSTRING en la UI si quieres coma decimal en español.
+                // Usa CurrentCulture o déjalo sin especificar para que use la del sistema.
+                string priceFormat = "N" + ConfiguracionUsuario.CurrencyDecimals;
+
+                if (txtProductPrice != null && decimal.TryParse(txtProductPrice.Text, NumberStyles.Any, CultureInfo.CurrentCulture, out decimal price)) // ⭐ TryParse con CurrentCulture
                 {
-                    txtProductPrice.Text = price.ToString("N" + ConfiguracionUsuario.CurrencyDecimals, System.Globalization.CultureInfo.InvariantCulture);
+                    txtProductPrice.Text = price.ToString(priceFormat, CultureInfo.CurrentCulture); // ⭐ ToString con CurrentCulture
                 }
-                if (txtTotalSale != null && decimal.TryParse(txtTotalSale.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal total))
+                if (txtTotalSale != null && decimal.TryParse(txtTotalSale.Text, NumberStyles.Any, CultureInfo.CurrentCulture, out decimal total)) // ⭐ TryParse con CurrentCulture
                 {
-                    txtTotalSale.Text = total.ToString("N" + ConfiguracionUsuario.CurrencyDecimals, System.Globalization.CultureInfo.InvariantCulture);
+                    txtTotalSale.Text = total.ToString(priceFormat, CultureInfo.CurrentCulture); // ⭐ ToString con CurrentCulture
                 }
 
-                if (dgvSaleItems.Columns["PricePerUnit"] != null)
+                // Actualizar formatos de columna en DataGridViews
+                if (dgvSaleItems.Columns.Contains("PricePerUnit"))
                 {
-                    dgvSaleItems.Columns["PricePerUnit"].DefaultCellStyle.Format = "N" + ConfiguracionUsuario.CurrencyDecimals;
+                    dgvSaleItems.Columns["PricePerUnit"].DefaultCellStyle.Format = priceFormat;
                 }
-                if (dgvSaleItems.Columns["TotalPrice"] != null)
+                if (dgvSaleItems.Columns.Contains("TotalPrice"))
                 {
-                    dgvSaleItems.Columns["TotalPrice"].DefaultCellStyle.Format = "N" + ConfiguracionUsuario.CurrencyDecimals;
+                    dgvSaleItems.Columns["TotalPrice"].DefaultCellStyle.Format = priceFormat;
+                }
+                if (dgvProducts.Columns.Contains("PricePerUnit"))
+                {
+                    dgvProducts.Columns["PricePerUnit"].DefaultCellStyle.Format = priceFormat;
                 }
 
-                if (dgvProducts.Columns["PricePerUnit"] != null)
-                {
-                    dgvProducts.Columns["PricePerUnit"].DefaultCellStyle.Format = "N" + ConfiguracionUsuario.CurrencyDecimals;
-                }
+                // ⭐ NO veo `numericUpDownDecimalesBalanza_ValueChanged` que actualice los decimales de peso
+                // Si el numericUpDownDecimalesPrecio_ValueChanged es solo para precios, no debería llamar a UpdateProductDecimals()
+                // o UpdateProductDecimals() debe actualizar solo los decimales de PRECIO.
+                // Si se debe actualizar el formato de peso, necesitarás un método similar para el numericUpDownDecimalesBalanza
+                // Y llama a LoadProductData() para que los formatos se apliquen a los productos recién cargados.
+                LoadProductData(); // Esto recargará el dgvProducts y aplicará el formato
 
-                UpdateProductDecimals();
                 Logger.Log("Decimales de precio actualizados", $"Nuevo valor: {ConfiguracionUsuario.CurrencyDecimals}");
             }
             catch (Exception ex)
@@ -4299,7 +4688,7 @@ namespace BalanzaPOSNuevo
         {
             if (tabControl1.SelectedTab == tabPageProducts) // Ajusta "tabProducts" al nombre real
             {
-                LoadProducts();
+                LoadProductsToDataGridView();
             }
         }
 
@@ -4335,6 +4724,10 @@ namespace BalanzaPOSNuevo
             }
         }
 
+        // ARCHIVO: MainScreen.cs
+
+        // ARCHIVO: MainScreen.cs
+
         private void btnConnectBalanza_Click(object sender, EventArgs e)
         {
             try
@@ -4342,60 +4735,53 @@ namespace BalanzaPOSNuevo
                 string selectedPort = cmbPorts.SelectedItem?.ToString();
                 if (string.IsNullOrEmpty(selectedPort))
                 {
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnConnectBalanza_Click: Puerto no seleccionado\n");
                     MessageBox.Show("Seleccione un puerto serial.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
-                // Si el puerto seleccionado es diferente al guardado, actualiza la configuración.
-                if (selectedPort != ConfiguracionUsuario.SerialPort)
+                if (selectedPort != ConfiguracionUsuario.ScalePortName)
                 {
                     ConfiguracionUsuario.SaveSettings(
                         ConfiguracionUsuario.WeightDecimals,
                         ConfiguracionUsuario.CurrencyDecimals,
                         ConfiguracionUsuario.CurrencySymbol,
-                        ConfiguracionUsuario.BaudRate, // Asume que BaudRate, Parity, DataBits, StopBits vienen de tu UI o están fijos
                         selectedPort,
-                        ConfiguracionUsuario.Parity,
-                        ConfiguracionUsuario.DataBits,
-                        ConfiguracionUsuario.StopBits
+                        ConfiguracionUsuario.ScaleBaudRate,
+                        ConfiguracionUsuario.ScaleParity,
+                        ConfiguracionUsuario.ScaleDataBits,
+                        ConfiguracionUsuario.ScaleStopBits
                     );
-                    File.AppendAllText("debug.log", $"[{DateTime.Now}] btnConnectBalanza_Click: Configuración de puerto actualizada a {selectedPort}\n");
+                    Logger.Log("Conexión Balanza", $"Configuración de puerto actualizada a {selectedPort}");
                 }
 
-                // Llamar a SetupSerialPort para configurar y abrir el puerto.
-                SetupSerialPort();
+                // ⭐ Ahora, simplemente llamamos a LoadScaleSettingsAndConnect para manejar la conexión
+                LoadScaleSettingsAndConnect();
 
-                // Inicializar o iniciar el temporizador.
-                
-                // Actualizar el estado de la UI.
-                lblConnectionStatus.Text = "Conectado";
-                lblConnectionStatus.ForeColor = Color.Green;
-                btnConnectBalanza.Enabled = false;
-                btnDisconnectBalanza.Enabled = true;
+                // La UI ya se actualiza dentro de LoadScaleSettingsAndConnect o en el DataReceived
+                // Elimina estas líneas si ya se manejan en LoadScaleSettingsAndConnect
+                // lblStatusBalanza.Text = "Conectado"; 
+                // lblStatusBalanza.ForeColor = Color.Green; 
 
-                // Asegurarse de que el ComboBox muestre el puerto conectado
-                if (cmbPorts.Items.Count > 0 && cmbPorts.SelectedItem?.ToString() != ConfiguracionUsuario.SerialPort)
-                {
-                    cmbPorts.SelectedItem = ConfiguracionUsuario.SerialPort;
-                }
+                // Los botones se habilitan/deshabilitan en LoadScaleSettingsAndConnect
+                // btnConnectBalanza.Enabled = false; 
+                // btnDisconnectBalanza.Enabled = true; 
 
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] btnConnectBalanza_Click: Balanza conectada exitosamente\n");
-                MessageBox.Show($"Balanza conectada al puerto {ConfiguracionUsuario.SerialPort} con éxito.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Logger.Log("Conexión Balanza", $"Balanza conectada exitosamente al puerto {ConfiguracionUsuario.ScalePortName}.");
+                MessageBox.Show($"Balanza conectada al puerto {ConfiguracionUsuario.ScalePortName} con éxito.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                File.AppendAllText("debug.log", $"[{DateTime.Now}] Error en btnConnectBalanza_Click: {ex.Message}\nStackTrace: {ex.StackTrace}\n");
+                Logger.Log("Error en btnConnectBalanza_Click", ex.Message);
                 MessageBox.Show($"Error al conectar la balanza: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                lblConnectionStatus.Text = "Desconectado";
-                lblConnectionStatus.ForeColor = Color.Red;
+                // El estado y los botones se gestionan en LoadScaleSettingsAndConnect() si hubo error en SetupSerialPort()
+                // o manualmente si el error es antes de eso.
+                UpdateBalanzaStatusUI("Desconectada", Color.Red);
                 btnConnectBalanza.Enabled = true;
                 btnDisconnectBalanza.Enabled = false;
-
-                // Asegurarse de detener el temporizador en caso de fallo
-                if (weightUpdateTimer != null && weightUpdateTimer.Enabled)
+                if (balanzaHeartbeatTimer != null && balanzaHeartbeatTimer.Enabled)
                 {
-                    weightUpdateTimer.Stop();
+                    balanzaHeartbeatTimer.Stop();
+                    Logger.Log("Balanza", "Temporizador de heartbeat detenido por error de conexión.");
                 }
             }
         }
@@ -4465,7 +4851,7 @@ namespace BalanzaPOSNuevo
                 using (var conn = DatabaseHelper.GetConnection())
                 {
                     conn.Open();
-                    using (var cmd = new SQLiteCommand("SELECT SerialPort, BaudRate, Parity, DataBits, StopBits FROM Settings WHERE Id = 1", conn))
+                    using (var cmd = new SQLiteCommand("SELECT ScalePortName, ScaleBaudRate, ScaleParity, ScaleDataBits, ScaleStopBits FROM Settings WHERE Id = 1", conn))
                     {
                         using (var reader = cmd.ExecuteReader())
                         {
@@ -4555,11 +4941,11 @@ namespace BalanzaPOSNuevo
             try
             {
                
-                if (serialPort != null && serialPort.IsOpen)
+                if (_serialPort != null && _serialPort.IsOpen)
                 {
-                    serialPort.Close();
-                    serialPort.Dispose();
-                    serialPort = null;
+                    _serialPort.Close();
+                    _serialPort.Dispose();
+                    _serialPort = null;
                     File.AppendAllText("debug.log", $"[{DateTime.Now}] btnLogout_Click: Puerto serial cerrado\n");
                 }
 
@@ -4655,7 +5041,7 @@ namespace BalanzaPOSNuevo
         }
         private void btnClearProductFields_Click(object sender, EventArgs e)
         {
-            txtProductId.Text = "";
+            txtProductCode.Text = "";
             txtProductName.Text = "";
             txtProductPrice.Text = "";
             cboProductUnit.SelectedIndex = -1;
@@ -4664,6 +5050,8 @@ namespace BalanzaPOSNuevo
             chkProductActive.Checked = true;
             MessageBox.Show("Campos limpiados.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+
+        // ARCHIVO: MainScreen.cs
 
         private void numericUpDownDecimalesBalanza_ValueChanged(object sender, EventArgs e)
         {
@@ -4674,37 +5062,47 @@ namespace BalanzaPOSNuevo
                     weightDecimals: newWeightDecimals,
                     currencyDecimals: ConfiguracionUsuario.CurrencyDecimals,
                     currencySymbol: ConfiguracionUsuario.CurrencySymbol,
-                    baudRate: ConfiguracionUsuario.BaudRate,
-                    serialPort: ConfiguracionUsuario.SerialPort,
-                    parity: ConfiguracionUsuario.Parity,
-                    dataBits: ConfiguracionUsuario.DataBits,
-                    stopBits: ConfiguracionUsuario.StopBits
+                    scalePortName: ConfiguracionUsuario.ScalePortName,
+                    scaleBaudRate: ConfiguracionUsuario.ScaleBaudRate,
+                    scaleParity: ConfiguracionUsuario.ScaleParity,
+                    scaleDataBits: ConfiguracionUsuario.ScaleDataBits,
+                    scaleStopBits: ConfiguracionUsuario.ScaleStopBits
                 );
 
-                if (txtWeightDisplay != null && decimal.TryParse(txtWeightDisplay.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal weight))
+                // ⭐ CORRECCIÓN: Usar CurrentCulture para MOSTRAR en la UI
+                // InvariantCulture siempre usa punto decimal, pero tu usuario puede esperar coma.
+                if (txtWeightDisplay != null && decimal.TryParse(txtWeightDisplay.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.CurrentCulture, out decimal weight)) // ⭐ Parsear también con CurrentCulture
                 {
-                    txtWeightDisplay.Text = weight.ToString("N" + ConfiguracionUsuario.WeightDecimals, System.Globalization.CultureInfo.InvariantCulture);
+                    txtWeightDisplay.Text = weight.ToString("N" + ConfiguracionUsuario.WeightDecimals, System.Globalization.CultureInfo.CurrentCulture); // ⭐ Mostrar con CurrentCulture
                 }
 
-                if (dgvSaleItems.Columns["Weight"] != null)
+                // Formato para DataGridViews
+                string weightFormat = "N" + ConfiguracionUsuario.WeightDecimals; // Crea el formato una vez
+
+                if (dgvSaleItems.Columns.Contains("Quantity")) // Asumo que Quantity usa decimales de peso
                 {
-                    dgvSaleItems.Columns["Weight"].DefaultCellStyle.Format = "N" + ConfiguracionUsuario.WeightDecimals;
+                    dgvSaleItems.Columns["Quantity"].DefaultCellStyle.Format = weightFormat;
                 }
-                if (dgvSaleItems.Columns["Stock"] != null)
+                // No encontré "Weight" en tu dgvSaleItems, si existe, también aplícale el formato.
+                // if (dgvSaleItems.Columns.Contains("Weight"))
+                // {
+                //     dgvSaleItems.Columns["Weight"].DefaultCellStyle.Format = weightFormat;
+                // }
+
+                if (dgvProducts.Columns.Contains("Stock"))
                 {
-                    dgvSaleItems.Columns["Stock"].DefaultCellStyle.Format = "N" + ConfiguracionUsuario.WeightDecimals;
+                    dgvProducts.Columns["Stock"].DefaultCellStyle.Format = weightFormat;
+                }
+                if (dgvProducts.Columns.Contains("MinimumStock"))
+                {
+                    dgvProducts.Columns["MinimumStock"].DefaultCellStyle.Format = weightFormat;
                 }
 
-                if (dgvProducts.Columns["Stock"] != null)
-                {
-                    dgvProducts.Columns["Stock"].DefaultCellStyle.Format = "N" + ConfiguracionUsuario.WeightDecimals;
-                }
-                if (dgvProducts.Columns["MinimumStock"] != null)
-                {
-                    dgvProducts.Columns["MinimumStock"].DefaultCellStyle.Format = "N" + ConfiguracionUsuario.WeightDecimals;
-                }
+                // Es posible que necesites recargar los datos para que el formato se aplique completamente
+                // a las celdas ya cargadas en los DataGridViews.
+                LoadProductData(); // Para dgvProducts
+                                   // Y si tienes un método para recargar dgvSaleItems, llámalo aquí también.
 
-                UpdateProductDecimals();
                 Logger.Log("Decimales de peso actualizados", $"Nuevo valor: {ConfiguracionUsuario.WeightDecimals}");
             }
             catch (Exception ex)
@@ -4729,7 +5127,7 @@ namespace BalanzaPOSNuevo
                         {
                             if (reader.Read())
                             {
-                                txtProductId.Text = reader["Code"].ToString();
+                                txtProductCode.Text = reader["Code"].ToString();
                                 txtProductName.Text = reader["Name"].ToString();
                                 txtProductPrice.Text = reader["Price"].ToString();
                                 cboProductUnit.Text = reader["Unit"].ToString();
@@ -4765,7 +5163,12 @@ namespace BalanzaPOSNuevo
 
         }
 
-        private void txtWeightDisplay_TextChanged_1(object sender, EventArgs e)
+        private void txt1Quantity_TextChanged_1(object sender, EventArgs e)
+        {
+
+        }
+
+        private void txtDiscount_TextChanged_1(object sender, EventArgs e)
         {
 
         }

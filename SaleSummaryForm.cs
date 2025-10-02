@@ -5,6 +5,10 @@ using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 using System.IO;
+using BalanzaPOSNuevo.Helpers;
+using BalanzaPOSNuevo.Models;
+
+
 
 namespace BalanzaPOSNuevo
 {

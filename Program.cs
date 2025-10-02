@@ -1,6 +1,11 @@
 ﻿using System;
 using System.IO; // Agregado para File
 using System.Windows.Forms;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using BalanzaPOSNuevo.Helpers;
+
 
 namespace BalanzaPOSNuevo
 {
@@ -14,6 +19,7 @@ namespace BalanzaPOSNuevo
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            DatabaseHelper.InitializeDatabase();
             ShowLoginScreen();
             Application.Run();
 

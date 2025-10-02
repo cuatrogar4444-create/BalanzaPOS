@@ -31,7 +31,7 @@ namespace BalanzaPOSNuevo
             this.panel5 = new System.Windows.Forms.Panel();
             this.label25 = new System.Windows.Forms.Label();
             this.label24 = new System.Windows.Forms.Label();
-            this.btnAdmin = new System.Windows.Forms.Button();
+            this.btnTestQuickProduct = new System.Windows.Forms.Button();
             this.cboPaymentMethod = new System.Windows.Forms.ComboBox();
             this.btnFinalizeSale = new System.Windows.Forms.Button();
             this.btnClearAllItems = new System.Windows.Forms.Button();
@@ -49,11 +49,10 @@ namespace BalanzaPOSNuevo
             this.txtSaleProductPrice = new System.Windows.Forms.TextBox();
             this.label5 = new System.Windows.Forms.Label();
             this.txtSaleProductName = new System.Windows.Forms.Label();
-            this.btnSearchProduct = new System.Windows.Forms.Button();
             this.label4 = new System.Windows.Forms.Label();
             this.label3 = new System.Windows.Forms.Label();
             this.panel4 = new System.Windows.Forms.Panel();
-            this.lblConnectionStatus = new System.Windows.Forms.Label();
+            this.lblStatusBalanza = new System.Windows.Forms.Label();
             this.label21 = new System.Windows.Forms.Label();
             this.lblDateTime = new System.Windows.Forms.Label();
             this.panel2 = new System.Windows.Forms.Panel();
@@ -80,11 +79,10 @@ namespace BalanzaPOSNuevo
             this.panel3 = new System.Windows.Forms.Panel();
             this.dgvProducts = new System.Windows.Forms.DataGridView();
             this.productPanel = new System.Windows.Forms.Panel();
-            this.txtSearchProduct = new System.Windows.Forms.TextBox();
             this.txtStock = new System.Windows.Forms.MaskedTextBox();
             this.txtProductPrice = new System.Windows.Forms.MaskedTextBox();
             this.txtMinimumStock = new System.Windows.Forms.MaskedTextBox();
-            this.txtProductId = new System.Windows.Forms.MaskedTextBox();
+            this.txtProductCode = new System.Windows.Forms.MaskedTextBox();
             this.btnClearProductFields = new System.Windows.Forms.Button();
             this.btnDeleteProduct = new System.Windows.Forms.Button();
             this.btnUpdateProduct = new System.Windows.Forms.Button();
@@ -247,7 +245,7 @@ namespace BalanzaPOSNuevo
             // 
             this.panel5.Controls.Add(this.label25);
             this.panel5.Controls.Add(this.label24);
-            this.panel5.Controls.Add(this.btnAdmin);
+            this.panel5.Controls.Add(this.btnTestQuickProduct);
             this.panel5.Controls.Add(this.cboPaymentMethod);
             this.panel5.Controls.Add(this.btnFinalizeSale);
             this.panel5.Controls.Add(this.btnClearAllItems);
@@ -281,15 +279,16 @@ namespace BalanzaPOSNuevo
             this.label24.TabIndex = 2;
             this.label24.Text = "Descuento";
             // 
-            // btnAdmin
+            // btnTestQuickProduct
             // 
-            this.btnAdmin.Location = new System.Drawing.Point(118, 118);
-            this.btnAdmin.Margin = new System.Windows.Forms.Padding(4);
-            this.btnAdmin.Name = "btnAdmin";
-            this.btnAdmin.Size = new System.Drawing.Size(139, 40);
-            this.btnAdmin.TabIndex = 6;
-            this.btnAdmin.Text = "ADMIN.";
-            this.btnAdmin.UseVisualStyleBackColor = true;
+            this.btnTestQuickProduct.Location = new System.Drawing.Point(115, 100);
+            this.btnTestQuickProduct.Margin = new System.Windows.Forms.Padding(4);
+            this.btnTestQuickProduct.Name = "btnTestQuickProduct";
+            this.btnTestQuickProduct.Size = new System.Drawing.Size(139, 40);
+            this.btnTestQuickProduct.TabIndex = 6;
+            this.btnTestQuickProduct.Text = "ADMIN.";
+            this.btnTestQuickProduct.UseVisualStyleBackColor = true;
+            this.btnTestQuickProduct.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // cboPaymentMethod
             // 
@@ -305,7 +304,7 @@ namespace BalanzaPOSNuevo
             // 
             // btnFinalizeSale
             // 
-            this.btnFinalizeSale.Location = new System.Drawing.Point(549, 44);
+            this.btnFinalizeSale.Location = new System.Drawing.Point(372, 44);
             this.btnFinalizeSale.Name = "btnFinalizeSale";
             this.btnFinalizeSale.Size = new System.Drawing.Size(199, 71);
             this.btnFinalizeSale.TabIndex = 1;
@@ -315,7 +314,7 @@ namespace BalanzaPOSNuevo
             // 
             // btnClearAllItems
             // 
-            this.btnClearAllItems.Location = new System.Drawing.Point(1137, 89);
+            this.btnClearAllItems.Location = new System.Drawing.Point(1028, 45);
             this.btnClearAllItems.Name = "btnClearAllItems";
             this.btnClearAllItems.Size = new System.Drawing.Size(184, 69);
             this.btnClearAllItems.TabIndex = 3;
@@ -325,7 +324,7 @@ namespace BalanzaPOSNuevo
             // 
             // btnNewSale
             // 
-            this.btnNewSale.Location = new System.Drawing.Point(793, 42);
+            this.btnNewSale.Location = new System.Drawing.Point(596, 44);
             this.btnNewSale.Name = "btnNewSale";
             this.btnNewSale.Size = new System.Drawing.Size(211, 71);
             this.btnNewSale.TabIndex = 4;
@@ -335,7 +334,7 @@ namespace BalanzaPOSNuevo
             // 
             // btnDevolucion
             // 
-            this.btnDevolucion.Location = new System.Drawing.Point(1376, 44);
+            this.btnDevolucion.Location = new System.Drawing.Point(1238, 45);
             this.btnDevolucion.Name = "btnDevolucion";
             this.btnDevolucion.Size = new System.Drawing.Size(186, 69);
             this.btnDevolucion.TabIndex = 9;
@@ -345,7 +344,7 @@ namespace BalanzaPOSNuevo
             // 
             // btnRemoveSaleItem
             // 
-            this.btnRemoveSaleItem.Location = new System.Drawing.Point(1137, 15);
+            this.btnRemoveSaleItem.Location = new System.Drawing.Point(828, 44);
             this.btnRemoveSaleItem.Name = "btnRemoveSaleItem";
             this.btnRemoveSaleItem.Size = new System.Drawing.Size(184, 68);
             this.btnRemoveSaleItem.TabIndex = 5;
@@ -360,6 +359,7 @@ namespace BalanzaPOSNuevo
             this.txtDiscount.Name = "txtDiscount";
             this.txtDiscount.Size = new System.Drawing.Size(159, 34);
             this.txtDiscount.TabIndex = 0;
+            this.txtDiscount.TextChanged += new System.EventHandler(this.txtDiscount_TextChanged_1);
             // 
             // productPanelVentas
             // 
@@ -373,7 +373,6 @@ namespace BalanzaPOSNuevo
             this.productPanelVentas.Controls.Add(this.txtSaleProductPrice);
             this.productPanelVentas.Controls.Add(this.label5);
             this.productPanelVentas.Controls.Add(this.txtSaleProductName);
-            this.productPanelVentas.Controls.Add(this.btnSearchProduct);
             this.productPanelVentas.Controls.Add(this.label4);
             this.productPanelVentas.Controls.Add(this.label3);
             this.productPanelVentas.Location = new System.Drawing.Point(1210, 166);
@@ -415,6 +414,7 @@ namespace BalanzaPOSNuevo
             this.txtSearchProductCode.TabIndex = 9;
             this.txtSearchProductCode.TextAlign = System.Windows.Forms.HorizontalAlignment.Right;
             this.txtSearchProductCode.MaskInputRejected += new System.Windows.Forms.MaskInputRejectedEventHandler(this.txtSearchProductCode_MaskInputRejected_1);
+            this.txtSearchProductCode.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtSearchProductCode_KeyDown);
             // 
             // lblSaleProductUnit
             // 
@@ -435,6 +435,7 @@ namespace BalanzaPOSNuevo
             this.txt1Quantity.Name = "txt1Quantity";
             this.txt1Quantity.Size = new System.Drawing.Size(163, 38);
             this.txt1Quantity.TabIndex = 6;
+            this.txt1Quantity.TextChanged += new System.EventHandler(this.txt1Quantity_TextChanged_1);
             // 
             // btnAddSaleItem
             // 
@@ -479,21 +480,9 @@ namespace BalanzaPOSNuevo
             this.txtSaleProductName.Location = new System.Drawing.Point(165, 8);
             this.txtSaleProductName.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.txtSaleProductName.Name = "txtSaleProductName";
-            this.txtSaleProductName.Size = new System.Drawing.Size(160, 33);
+            this.txtSaleProductName.Size = new System.Drawing.Size(268, 33);
             this.txtSaleProductName.TabIndex = 4;
-            this.txtSaleProductName.Text = "                        ";
-            // 
-            // btnSearchProduct
-            // 
-            this.btnSearchProduct.Font = new System.Drawing.Font("Segoe UI", 12F, System.Drawing.FontStyle.Bold);
-            this.btnSearchProduct.Location = new System.Drawing.Point(63, 120);
-            this.btnSearchProduct.Margin = new System.Windows.Forms.Padding(4);
-            this.btnSearchProduct.Name = "btnSearchProduct";
-            this.btnSearchProduct.Size = new System.Drawing.Size(242, 48);
-            this.btnSearchProduct.TabIndex = 3;
-            this.btnSearchProduct.Text = "Buscar";
-            this.btnSearchProduct.UseVisualStyleBackColor = true;
-            this.btnSearchProduct.Click += new System.EventHandler(this.btnSearchProduct_Click);
+            this.txtSaleProductName.Text = "                                          ";
             // 
             // label4
             // 
@@ -521,7 +510,7 @@ namespace BalanzaPOSNuevo
             // 
             // panel4
             // 
-            this.panel4.Controls.Add(this.lblConnectionStatus);
+            this.panel4.Controls.Add(this.lblStatusBalanza);
             this.panel4.Controls.Add(this.label21);
             this.panel4.Controls.Add(this.lblDateTime);
             this.panel4.Location = new System.Drawing.Point(8, 4);
@@ -530,21 +519,21 @@ namespace BalanzaPOSNuevo
             this.panel4.Size = new System.Drawing.Size(329, 165);
             this.panel4.TabIndex = 9;
             // 
-            // lblConnectionStatus
+            // lblStatusBalanza
             // 
-            this.lblConnectionStatus.AutoSize = true;
-            this.lblConnectionStatus.ForeColor = System.Drawing.Color.Red;
-            this.lblConnectionStatus.Location = new System.Drawing.Point(108, 49);
-            this.lblConnectionStatus.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
-            this.lblConnectionStatus.Name = "lblConnectionStatus";
-            this.lblConnectionStatus.Size = new System.Drawing.Size(145, 28);
-            this.lblConnectionStatus.TabIndex = 10;
-            this.lblConnectionStatus.Text = "Desconectado";
+            this.lblStatusBalanza.AutoSize = true;
+            this.lblStatusBalanza.ForeColor = System.Drawing.Color.Red;
+            this.lblStatusBalanza.Location = new System.Drawing.Point(116, 36);
+            this.lblStatusBalanza.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblStatusBalanza.Name = "lblStatusBalanza";
+            this.lblStatusBalanza.Size = new System.Drawing.Size(145, 28);
+            this.lblStatusBalanza.TabIndex = 10;
+            this.lblStatusBalanza.Text = "Desconectado";
             // 
             // label21
             // 
             this.label21.AutoSize = true;
-            this.label21.Location = new System.Drawing.Point(0, 49);
+            this.label21.Location = new System.Drawing.Point(4, 36);
             this.label21.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.label21.Name = "label21";
             this.label21.Size = new System.Drawing.Size(80, 28);
@@ -589,6 +578,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick8.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick8.TabIndex = 7;
             this.btnProductQuick8.UseVisualStyleBackColor = true;
+            this.btnProductQuick8.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick10
             // 
@@ -598,6 +588,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick10.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick10.TabIndex = 6;
             this.btnProductQuick10.UseVisualStyleBackColor = true;
+            this.btnProductQuick10.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick9
             // 
@@ -607,6 +598,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick9.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick9.TabIndex = 5;
             this.btnProductQuick9.UseVisualStyleBackColor = true;
+            this.btnProductQuick9.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick7
             // 
@@ -616,6 +608,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick7.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick7.TabIndex = 6;
             this.btnProductQuick7.UseVisualStyleBackColor = true;
+            this.btnProductQuick7.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick6
             // 
@@ -625,6 +618,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick6.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick6.TabIndex = 5;
             this.btnProductQuick6.UseVisualStyleBackColor = true;
+            this.btnProductQuick6.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick5
             // 
@@ -634,6 +628,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick5.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick5.TabIndex = 4;
             this.btnProductQuick5.UseVisualStyleBackColor = true;
+            this.btnProductQuick5.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick4
             // 
@@ -643,6 +638,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick4.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick4.TabIndex = 3;
             this.btnProductQuick4.UseVisualStyleBackColor = true;
+            this.btnProductQuick4.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick3
             // 
@@ -652,6 +648,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick3.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick3.TabIndex = 2;
             this.btnProductQuick3.UseVisualStyleBackColor = true;
+            this.btnProductQuick3.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick2
             // 
@@ -661,6 +658,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick2.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick2.TabIndex = 1;
             this.btnProductQuick2.UseVisualStyleBackColor = true;
+            this.btnProductQuick2.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // btnProductQuick1
             // 
@@ -670,7 +668,7 @@ namespace BalanzaPOSNuevo
             this.btnProductQuick1.Size = new System.Drawing.Size(150, 80);
             this.btnProductQuick1.TabIndex = 0;
             this.btnProductQuick1.UseVisualStyleBackColor = true;
-            this.btnProductQuick1.Click += new System.EventHandler(this.btnProductQuick1_Click);
+            this.btnProductQuick1.Click += new System.EventHandler(this.btnQuickProduct_Click);
             // 
             // txtTotalSale
             // 
@@ -733,34 +731,33 @@ namespace BalanzaPOSNuevo
             // 
             // txtWeightDisplay
             // 
-            this.txtWeightDisplay.Font = new System.Drawing.Font("Segoe Script", 36F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.txtWeightDisplay.Location = new System.Drawing.Point(60, 49);
+            this.txtWeightDisplay.Font = new System.Drawing.Font("Segoe Script", 42F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.txtWeightDisplay.Location = new System.Drawing.Point(4, 29);
             this.txtWeightDisplay.Margin = new System.Windows.Forms.Padding(4);
             this.txtWeightDisplay.Name = "txtWeightDisplay";
-            this.txtWeightDisplay.Size = new System.Drawing.Size(498, 104);
+            this.txtWeightDisplay.Size = new System.Drawing.Size(559, 120);
             this.txtWeightDisplay.TabIndex = 3;
             this.txtWeightDisplay.TextAlign = System.Windows.Forms.HorizontalAlignment.Right;
-            this.txtWeightDisplay.TextChanged += new System.EventHandler(this.txtWeightDisplay_TextChanged_1);
             // 
             // cboWeightUnit
             // 
-            this.cboWeightUnit.Font = new System.Drawing.Font("Segoe UI", 37.8F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.cboWeightUnit.Font = new System.Drawing.Font("Segoe UI", 42F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.cboWeightUnit.FormattingEnabled = true;
             this.cboWeightUnit.Items.AddRange(new object[] {
             "KG",
             "G",
             "LB",
             "OZ"});
-            this.cboWeightUnit.Location = new System.Drawing.Point(566, 56);
+            this.cboWeightUnit.Location = new System.Drawing.Point(566, 41);
             this.cboWeightUnit.Margin = new System.Windows.Forms.Padding(4);
             this.cboWeightUnit.Name = "cboWeightUnit";
-            this.cboWeightUnit.Size = new System.Drawing.Size(150, 93);
+            this.cboWeightUnit.Size = new System.Drawing.Size(150, 101);
             this.cboWeightUnit.TabIndex = 2;
             // 
             // label2
             // 
             this.label2.AutoSize = true;
-            this.label2.Location = new System.Drawing.Point(510, 5);
+            this.label2.Location = new System.Drawing.Point(561, -6);
             this.label2.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.label2.Name = "label2";
             this.label2.Size = new System.Drawing.Size(84, 28);
@@ -770,7 +767,7 @@ namespace BalanzaPOSNuevo
             // label1
             // 
             this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(170, 9);
+            this.label1.Location = new System.Drawing.Point(168, -1);
             this.label1.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.label1.Name = "label1";
             this.label1.Size = new System.Drawing.Size(122, 28);
@@ -819,11 +816,10 @@ namespace BalanzaPOSNuevo
             // productPanel
             // 
             this.productPanel.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
-            this.productPanel.Controls.Add(this.txtSearchProduct);
             this.productPanel.Controls.Add(this.txtStock);
             this.productPanel.Controls.Add(this.txtProductPrice);
             this.productPanel.Controls.Add(this.txtMinimumStock);
-            this.productPanel.Controls.Add(this.txtProductId);
+            this.productPanel.Controls.Add(this.txtProductCode);
             this.productPanel.Controls.Add(this.btnClearProductFields);
             this.productPanel.Controls.Add(this.btnDeleteProduct);
             this.productPanel.Controls.Add(this.btnUpdateProduct);
@@ -840,14 +836,6 @@ namespace BalanzaPOSNuevo
             this.productPanel.Name = "productPanel";
             this.productPanel.Size = new System.Drawing.Size(407, 812);
             this.productPanel.TabIndex = 0;
-            // 
-            // txtSearchProduct
-            // 
-            this.txtSearchProduct.Location = new System.Drawing.Point(201, 7);
-            this.txtSearchProduct.Margin = new System.Windows.Forms.Padding(4);
-            this.txtSearchProduct.Name = "txtSearchProduct";
-            this.txtSearchProduct.Size = new System.Drawing.Size(124, 34);
-            this.txtSearchProduct.TabIndex = 20;
             // 
             // txtStock
             // 
@@ -876,15 +864,15 @@ namespace BalanzaPOSNuevo
             this.txtMinimumStock.TabIndex = 19;
             this.txtMinimumStock.TextAlign = System.Windows.Forms.HorizontalAlignment.Right;
             // 
-            // txtProductId
+            // txtProductCode
             // 
-            this.txtProductId.Location = new System.Drawing.Point(201, 121);
-            this.txtProductId.Margin = new System.Windows.Forms.Padding(4);
-            this.txtProductId.Mask = "000000";
-            this.txtProductId.Name = "txtProductId";
-            this.txtProductId.PromptChar = '0';
-            this.txtProductId.Size = new System.Drawing.Size(104, 34);
-            this.txtProductId.TabIndex = 17;
+            this.txtProductCode.Location = new System.Drawing.Point(201, 121);
+            this.txtProductCode.Margin = new System.Windows.Forms.Padding(4);
+            this.txtProductCode.Mask = "000000";
+            this.txtProductCode.Name = "txtProductCode";
+            this.txtProductCode.PromptChar = '0';
+            this.txtProductCode.Size = new System.Drawing.Size(104, 34);
+            this.txtProductCode.TabIndex = 17;
             // 
             // btnClearProductFields
             // 
@@ -1774,11 +1762,11 @@ namespace BalanzaPOSNuevo
         private System.Windows.Forms.Button btnProductQuick8;
         private System.Windows.Forms.Button btnProductQuick9;
         private System.Windows.Forms.Button btnProductQuick10;
-        private System.Windows.Forms.Button btnAdmin;
+        private System.Windows.Forms.Button btnTestQuickProduct;
         private System.Windows.Forms.Panel panel4;
         private System.Windows.Forms.Label lblDateTime;
         private System.Windows.Forms.Label label21;
-        private System.Windows.Forms.Label lblConnectionStatus;
+        private System.Windows.Forms.Label lblStatusBalanza;
         private System.Windows.Forms.Panel panel5;
         private System.Windows.Forms.TextBox txtDiscount;
         private System.Windows.Forms.ComboBox cboPaymentMethod;
@@ -1847,11 +1835,10 @@ namespace BalanzaPOSNuevo
         private System.Windows.Forms.NumericUpDown numericUpDownDecimalesPrecio;
         private System.Windows.Forms.Label labelDecimalesPrecio;
         private Panel productPanel;
-        private TextBox txtSearchProduct;
         private MaskedTextBox txtStock;
         private MaskedTextBox txtProductPrice;
         private MaskedTextBox txtMinimumStock;
-        private MaskedTextBox txtProductId;
+        private MaskedTextBox txtProductCode;
         private Button btnClearProductFields;
         private Button btnDeleteProduct;
         private Button btnUpdateProduct;
@@ -1873,7 +1860,6 @@ namespace BalanzaPOSNuevo
         private TextBox txtSaleProductPrice;
         private Label label5;
         private Label txtSaleProductName;
-        private Button btnSearchProduct;
         private Label label4;
         private Label label3;
     }

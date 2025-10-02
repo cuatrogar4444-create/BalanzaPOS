@@ -72,6 +72,7 @@
     <Reference Include="Microsoft.IO.RecyclableMemoryStream, Version=3.0.1.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
       <HintPath>..\packages\Microsoft.IO.RecyclableMemoryStream.3.0.1\lib\netstandard2.0\Microsoft.IO.RecyclableMemoryStream.dll</HintPath>
     </Reference>
+    <Reference Include="Microsoft.VisualBasic" />
     <Reference Include="PresentationCore" />
     <Reference Include="RBush, Version=4.0.0.0, Culture=neutral, PublicKeyToken=c77e27b81f4d0187, processorArchitecture=MSIL">
       <HintPath>..\packages\RBush.Signed.4.0.0\lib\net47\RBush.dll</HintPath>
@@ -119,10 +120,18 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BalanzaSimulator.cs" />
-    <Compile Include="ConfiguracionUsuario.cs" />
-    <Compile Include="DatabaseHelper.cs" />
+    <Compile Include="FormQuickButtonAssigner.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FormQuickButtonAssigner.Designer.cs">
+      <DependentUpon>FormQuickButtonAssigner.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Helpers\BalanzaHelper.cs" />
+    <Compile Include="Helpers\PasswordHasher.cs" />
+    <Compile Include="Models\ConfiguracionUsuario.cs" />
+    <Compile Include="Helpers\DatabaseHelper.cs" />
     <Compile Include="ExcelExporter.cs" />
-    <Compile Include="Logger.cs" />
+    <Compile Include="Helpers\Logger.cs" />
     <Compile Include="LoginScreen.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -133,22 +142,32 @@
     <Compile Include="MainScreen.Designer.cs">
       <DependentUpon>MainScreen.cs</DependentUpon>
     </Compile>
+    <Compile Include="Models\Product.cs" />
+    <Compile Include="Models\QuickProduct.cs" />
+    <Compile Include="Services\ProductService.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Services\QuickProductService.cs" />
     <Compile Include="ReturnScreen.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="ReturnScreen.designer.cs">
       <DependentUpon>ReturnScreen.cs</DependentUpon>
     </Compile>
+    <Compile Include="Models\SaleItem.cs" />
+    <Compile Include="Services\SaleService.cs" />
     <Compile Include="SaleSummaryForm.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="SaleSummaryForm.Designer.cs">
       <DependentUpon>SaleSummaryForm.cs</DependentUpon>
     </Compile>
+    <Compile Include="Services\ScaleService.cs" />
     <Compile Include="Session.cs" />
     <Compile Include="UserManager.cs" />
+    <EmbeddedResource Include="FormQuickButtonAssigner.resx">
+      <DependentUpon>FormQuickButtonAssigner.cs</DependentUpon>
+    </EmbeddedResource>
     <EmbeddedResource Include="LoginScreen.resx">
       <DependentUpon>LoginScreen.cs</DependentUpon>
     </EmbeddedResource>
